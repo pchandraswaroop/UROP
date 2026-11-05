@@ -93,12 +93,16 @@ def compute_metrics(
         f1_list.append(f1)
 
     # Aggregate metrics (skip NaN classes)
-    metrics["auc_mean"]     = float(np.mean(auc_list)) if auc_list else float("nan")
-    metrics["ap_mean"]      = float(np.mean(ap_list))  if ap_list  else float("nan")
-    metrics["f1_macro"]     = float(np.mean(f1_list))  if f1_list  else float("nan")
-    metrics["f1_micro"]     = float(f1_score(all_targets, all_preds, average="micro", zero_division=0))
-    metrics["n_valid_auc"]  = len(auc_list)
-    metrics["threshold"]    = threshold
+    metrics["auc_mean"]        = float(np.mean(auc_list)) if auc_list else float("nan")
+    metrics["ap_mean"]         = float(np.mean(ap_list))  if ap_list  else float("nan")
+    metrics["f1_macro"]        = float(np.mean(f1_list))  if f1_list  else float("nan")
+    metrics["f1_micro"]        = float(f1_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["precision_macro"] = float(precision_score(all_targets, all_preds, average="macro", zero_division=0))
+    metrics["recall_macro"]    = float(recall_score(all_targets, all_preds, average="macro", zero_division=0))
+    metrics["precision_micro"] = float(precision_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["recall_micro"]    = float(recall_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["n_valid_auc"]     = len(auc_list)
+    metrics["threshold"]       = threshold
 
     return metrics
 
@@ -150,9 +154,15 @@ class MetricAccumulator:
         self._targets.append(targets.detach().cpu().numpy())
 
     def compute(self, threshold: float = 0.5) -> Dict[str, float]:
-        all_probs   = np.concatenate(self._probs,   axis=0)
-        all_targets = np.concatenate(self._targets, axis=0)
+        all_probs   = np.concatenate(self._probs,   axis=0) if self._probs else np.empty((0, 14))
+        all_targets = np.concatenate(self._targets, axis=0) if self._targets else np.empty((0, 14))
         return compute_metrics(all_probs, all_targets, threshold=threshold)
+
+    def get_raw(self) -> Tuple[np.ndarray, np.ndarray]:
+        """Return concatenated raw probabilities and binary targets."""
+        all_probs   = np.concatenate(self._probs,   axis=0) if self._probs else np.empty((0, 14))
+        all_targets = np.concatenate(self._targets, axis=0) if self._targets else np.empty((0, 14))
+        return all_probs, all_targets
 
     def reset(self) -> None:
         self._probs.clear()

@@ -161,7 +161,7 @@ class TestInferenceService:
             p = result.probabilities[name]
             assert 0.0 <= p <= 1.0
 
-    def test_research_mode_blocks_when_checkpoint_missing(self, sample_pil_image):
+    def test_research_mode_blocks_when_checkpoint_missing(self, sample_pil_image, monkeypatch):
         service = CXRInferenceService(device="cpu")
         # 1. When explicit path does not exist
         with pytest.raises(CheckpointError, match="Checkpoint file does not exist"):
@@ -175,6 +175,7 @@ class TestInferenceService:
             )
 
         # 2. When checkpoint_path is None and no checkpoints exist on disk
+        monkeypatch.setattr(ModelCheckpointLoader, "list_available_checkpoints", staticmethod(lambda: {}))
         with pytest.raises(CheckpointError, match="No trained checkpoint found"):
             service.predict(
                 image_input=sample_pil_image,

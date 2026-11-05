@@ -114,6 +114,6 @@ def render_prediction_table(
 
     st.dataframe(
         table_data,
-        use_container_width=True,
+        width="stretch",
         hide_index=True,
     )

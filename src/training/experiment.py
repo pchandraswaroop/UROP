@@ -21,6 +21,7 @@ import time
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.optim import AdamW
@@ -210,8 +211,12 @@ class Experiment:
             max_epochs=actual_epochs,
         )
 
-        elapsed = time.time() - self.start_time
-        logger.info("Experiment '%s' finished in %.1fs", self.name, elapsed)
+        self.training_time_seconds = time.time() - self.start_time
+        self.best_epoch = getattr(self.trainer, "best_epoch", 0)
+        logger.info(
+            "Experiment '%s' finished in %.1fs (best epoch: %d)",
+            self.name, self.training_time_seconds, self.best_epoch + 1
+        )
 
         # Extract final val metrics from last history entry
         if self.train_history:
@@ -221,6 +226,8 @@ class Experiment:
                 for k, v in last.items()
                 if k.startswith("val_")
             }
+        self.val_metrics["best_epoch"] = self.best_epoch
+        self.val_metrics["training_time_seconds"] = self.training_time_seconds
         return self.val_metrics
 
     # ------------------------------------------------------------------
@@ -237,7 +244,13 @@ class Experiment:
             raise RuntimeError("Call setup() and run() before evaluate_test().")
 
         logger.info("Evaluating experiment '%s' on test split …", self.name)
-        self.test_metrics = self.trainer.eval_epoch(self.test_loader, split="test")
+        res = self.trainer.eval_epoch(self.test_loader, split="test", return_raw=True)
+        if isinstance(res, tuple):
+            self.test_metrics, self.test_probs, self.test_targets = res
+        else:
+            self.test_metrics = res
+            self.test_probs, self.test_targets = None, None
+
         logger.info(
             "Test | auc_mean=%.4f | f1_macro=%.4f",
             self.test_metrics.get("auc_mean", float("nan")),
@@ -272,6 +285,14 @@ class Experiment:
         test_path = out / "test_metrics.json"
         with open(test_path, "w") as f:
             json.dump(self.test_metrics, f, indent=2, default=str)
+
+        # Test predictions (for downstream analysis and visualizations)
+        if getattr(self, "test_probs", None) is not None and getattr(self, "test_targets", None) is not None:
+            np.savez_compressed(
+                out / "test_predictions.npz",
+                probs=self.test_probs,
+                targets=self.test_targets,
+            )
 
         # Training history
         history_path = out / "train_history.json"

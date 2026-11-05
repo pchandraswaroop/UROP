@@ -73,7 +73,7 @@ with col_input:
     if uploaded_file is not None:
         try:
             preview_image = Image.open(uploaded_file).convert("RGB")
-            st.image(preview_image, caption="Uploaded Radiograph", use_container_width=True)
+            st.image(preview_image, caption="Uploaded Radiograph", width="stretch")
         except Exception as e:
             st.error(f"Failed to read image: {e}")
     elif use_sample:
@@ -84,7 +84,7 @@ with col_input:
         xx, yy = np.meshgrid(x, y)
         synthetic_pattern = (np.sin(xx * 3) * np.cos(yy * 3) * 0.5 + 0.5) * 200
         preview_image = Image.fromarray(synthetic_pattern.astype(np.uint8)).convert("RGB")
-        st.image(preview_image, caption="Synthetic Sample Radiograph (Testing)", use_container_width=True)
+        st.image(preview_image, caption="Synthetic Sample Radiograph (Testing)", width="stretch")
 
     st.divider()
 
@@ -159,7 +159,7 @@ with col_input:
                 value="",
             )
 
-    run_btn = st.button("Run Multi-Disease Inference", type="primary", use_container_width=True)
+    run_btn = st.button("Run Multi-Disease Inference", type="primary", width="stretch")
 
 with col_output:
     st.subheader("Inference Results & Probabilities")
@@ -211,7 +211,7 @@ with col_output:
 
         # Probability Bar Chart
         fig = plot_probability_chart(curr_result.probabilities, threshold=curr_result.threshold)
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width="stretch")
 
         # Call-to-action to inspect explainability
         st.info(

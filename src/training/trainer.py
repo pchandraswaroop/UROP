@@ -61,18 +61,20 @@ class EarlyStopping:
         self._best_score: Optional[float] = None
         self._best_weights = None
         self.stopped_epoch = 0
+        self.best_epoch = 0
 
         self._is_better = (lambda a, b: a - b > min_delta) if mode == "max" \
                           else (lambda a, b: b - a > min_delta)
 
     # ------------------------------------------------------------------
 
-    def __call__(self, score: float, model: nn.Module) -> bool:
+    def __call__(self, score: float, model: nn.Module, epoch: int = 0) -> bool:
         """Check whether training should stop.
 
         Args:
             score: Current epoch metric value (e.g. val_auc_mean).
             model: The model being trained.
+            epoch: Current epoch index.
 
         Returns:
             True if training should stop, False otherwise.
@@ -80,9 +82,10 @@ class EarlyStopping:
         if self._best_score is None or self._is_better(score, self._best_score):
             self._best_score   = score
             self._counter      = 0
+            self.best_epoch    = epoch
             if self.restore_best_weights:
                 self._best_weights = copy.deepcopy(model.state_dict())
-            logger.debug("EarlyStopping: new best score=%.6f", score)
+            logger.debug("EarlyStopping: new best score=%.6f at epoch %d", score, epoch)
             return False
 
         self._counter += 1
@@ -240,6 +243,7 @@ class Trainer:
         self.early_stopping = early_stopping
         self.csv_logger     = MetricsCSVLogger(csv_path) if csv_path else None
         self.scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
+        self.best_epoch: int = 0
 
     # ------------------------------------------------------------------
     # Private helpers
@@ -342,10 +346,12 @@ class Trainer:
         self,
         loader: DataLoader,
         split: str = "val",
-    ) -> Dict[str, float]:
+        return_raw: bool = False,
+    ):
         """Run one evaluation epoch.
 
         Uses model(return_logits=True) → sigmoid for probs, logits for loss.
+        If return_raw=True, returns (metrics, all_probs, all_targets).
         """
         self.model.eval()
         acc        = MetricAccumulator()
@@ -375,6 +381,10 @@ class Trainer:
 
         metrics = acc.compute()
         metrics["loss"] = total_loss / max(n_batches, 1)
+
+        if return_raw:
+            all_probs, all_targets = acc.get_raw()
+            return metrics, all_probs, all_targets
         return metrics
 
     # ------------------------------------------------------------------
@@ -438,13 +448,15 @@ class Trainer:
             if self.early_stopping is not None:
                 monitor_val = val_metrics.get("auc_mean", float("nan"))
                 if not (monitor_val != monitor_val):  # nan check
-                    should_stop = self.early_stopping(monitor_val, self.model)
+                    should_stop = self.early_stopping(monitor_val, self.model, epoch=epoch)
+                    self.best_epoch = self.early_stopping.best_epoch
                     if should_stop:
                         logger.info(
                             "Early stopping triggered at epoch %d "
-                            "(best val_auc_mean=%.4f)",
+                            "(best val_auc_mean=%.4f at epoch %d)",
                             epoch + 1,
                             self.early_stopping.best_score or float("nan"),
+                            self.best_epoch + 1,
                         )
                         break
 

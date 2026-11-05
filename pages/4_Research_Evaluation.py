@@ -94,7 +94,7 @@ with tab_train:
                 template="plotly_white",
                 height=380,
             )
-            st.plotly_chart(fig_loss, use_container_width=True)
+            st.plotly_chart(fig_loss, width="stretch")
 
         # Per-Disease Metrics Table
         st.markdown("### Per-Disease Test AUROC & F1-Score")
@@ -106,7 +106,7 @@ with tab_train:
                 per_disease_rows.append({"Disease Target": d_name, "AUROC": round(v, 4), "F1-Score": round(f1_val, 4)})
 
         if per_disease_rows:
-            st.dataframe(pd.DataFrame(per_disease_rows), use_container_width=True, hide_index=True)
+            st.dataframe(pd.DataFrame(per_disease_rows), width="stretch", hide_index=True)
     else:
         st.info(
             "ℹ️ **Full Training Evaluation Notice:** Full-scale multi-epoch model training has not been run on this local CPU workspace.\n\n"
@@ -125,7 +125,7 @@ with tab_faith:
     if faith_csv.exists():
         st.markdown("Verified quantitative faithfulness evaluation logs recorded from `scripts/run_explainability.py`:")
         df_faith = pd.read_csv(faith_csv)
-        st.dataframe(df_faith, use_container_width=True, hide_index=True)
+        st.dataframe(df_faith, width="stretch", hide_index=True)
 
         st.markdown("### Pixel Deletion Curves")
         del_pngs = list((REPO_ROOT / "outputs" / "explainability" / "faithfulness").glob("deletion_curve_*.png"))
@@ -149,7 +149,7 @@ with tab_mod_eval:
         mod_csv = REPO_ROOT / "outputs" / "explainability" / "modality" / "modality_contributions.csv"
         if mod_csv.exists():
             df_mod = pd.read_csv(mod_csv)
-            st.dataframe(df_mod, use_container_width=True, hide_index=True)
+            st.dataframe(df_mod, width="stretch", hide_index=True)
         else:
             st.caption("Run `scripts/run_explainability.py` to populate modality logs.")
 
@@ -158,6 +158,6 @@ with tab_mod_eval:
         shap_csv = REPO_ROOT / "outputs" / "explainability" / "shap" / "shap_feature_importance.csv"
         if shap_csv.exists():
             df_shap = pd.read_csv(shap_csv)
-            st.dataframe(df_shap, use_container_width=True, hide_index=True)
+            st.dataframe(df_shap, width="stretch", hide_index=True)
         else:
             st.caption("Run `scripts/run_explainability.py` to populate SHAP logs.")

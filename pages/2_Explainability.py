@@ -113,13 +113,13 @@ with tab_img:
         col1, col2, col3 = st.columns(3)
         with col1:
             st.markdown("**Original Radiograph**")
-            st.image(curr_result.raw_rgb, use_container_width=True)
+            st.image(curr_result.raw_rgb, width="stretch")
         with col2:
             st.markdown(f"**Heatmap: {target_disease}**")
-            st.image(img_exp["heatmap"], clamp=True, use_container_width=True)
+            st.image(img_exp["heatmap"], clamp=True, width="stretch")
         with col3:
             st.markdown(f"**Grad-CAM++ Overlay**")
-            st.image(img_exp["overlay"], use_container_width=True)
+            st.image(img_exp["overlay"], width="stretch")
 
         st.caption(
             "Grad-CAM++ weights feature maps by second-order gradients corresponding to the selected pathology output, "
@@ -140,7 +140,7 @@ with tab_tab:
         col_s1, col_s2 = st.columns([1.2, 1])
         with col_s1:
             shap_fig = plot_shap_bar(tab_exp["age_shap"], tab_exp["sex_shap"], target_disease)
-            st.plotly_chart(shap_fig, use_container_width=True)
+            st.plotly_chart(shap_fig, width="stretch")
         with col_s2:
             st.markdown("#### Shapley Attribution Analysis")
             st.markdown(f"• **Age Impact:** `{tab_exp['age_shap']:+.4f}` log-odds shift")
@@ -194,10 +194,10 @@ with tab_mod:
             mod_exp["pct_graph"],
             DISEASE_LABEL_NAMES,
         )
-        st.plotly_chart(mod_fig, use_container_width=True)
+        st.plotly_chart(mod_fig, width="stretch")
 
         st.markdown("#### Relative Modality Percentage Breakdown Table")
-        st.dataframe(mod_exp["summary_table"], use_container_width=True, hide_index=True)
+        st.dataframe(mod_exp["summary_table"], width="stretch", hide_index=True)
 
         st.warning(f"⚠️ **Clinical Disclaimer:** {mod_exp['disclaimer']}", icon="⚠️")
     else:

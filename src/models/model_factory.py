@@ -57,7 +57,7 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# ZeroImageBranch — for clinical-only / GNN-only experiments
+# ZeroImageBranch & ZeroClinicalBranch — for ablation / unimodal baselines
 # ---------------------------------------------------------------------------
 
 class ZeroImageBranch(nn.Module):
@@ -89,6 +89,35 @@ class ZeroImageBranch(nn.Module):
         """
         B = x.shape[0]
         return torch.zeros(B, self.output_dim, device=x.device, dtype=x.dtype)
+
+
+class ZeroClinicalBranch(nn.Module):
+    """Dummy clinical branch that always returns zeros.
+
+    Used for image-only experiments (cnn_only, vit_only) to strictly guarantee
+    zero demographic/metadata leakage into the image-only baseline.
+
+    Args:
+        output_dim: Dimension of the zero tensor to output. Must match what
+                    the downstream fusion layer expects as `clinical_dim`.
+    """
+
+    def __init__(self, output_dim: int = 64) -> None:
+        super().__init__()
+        self.output_dim = output_dim
+        logger.info("ZeroClinicalBranch: will output zeros [B, %d]", output_dim)
+
+    def forward(self, meta: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        """Return zero tensor matching expected clinical feature shape.
+
+        Args:
+            meta: [B, 2] — accepted but ignored.
+
+        Returns:
+            [B, output_dim] zero tensor on the same device as meta.
+        """
+        B = meta.shape[0]
+        return torch.zeros(B, self.output_dim, device=meta.device, dtype=meta.dtype)
 
 
 # ---------------------------------------------------------------------------
@@ -169,7 +198,7 @@ def build_model(
     if exp == "cnn_only":
         img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
         q    = IdentityQuantumLayer(input_dim=img.feature_dim, output_dim=q_out)
-        clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
+        clin = ZeroClinicalBranch(output_dim=clin_out)
         fuse = SimpleConcatFusion(image_dim=q_out, clinical_dim=clin_out,
                                   fused_dim=fused_simple, dropout=dropout)
         cls  = SharedClassifier(fused_dim=fused_simple, hidden_dim=cls_hidden,
@@ -183,7 +212,7 @@ def build_model(
     elif exp == "vit_only":
         img  = ImageBranch(backbone="vit_small_patch16_224", pretrained=pretrained)
         q    = IdentityQuantumLayer(input_dim=img.feature_dim, output_dim=q_out)
-        clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
+        clin = ZeroClinicalBranch(output_dim=clin_out)
         fuse = SimpleConcatFusion(image_dim=q_out, clinical_dim=clin_out,
                                   fused_dim=fused_simple, dropout=dropout)
         cls  = SharedClassifier(fused_dim=fused_simple, hidden_dim=cls_hidden,

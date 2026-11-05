@@ -139,7 +139,7 @@ variants_data = [
 ]
 
 df_variants = pd.DataFrame(variants_data)
-st.dataframe(df_variants, use_container_width=True, hide_index=True)
+st.dataframe(df_variants, width="stretch", hide_index=True)
 
 st.divider()
 
