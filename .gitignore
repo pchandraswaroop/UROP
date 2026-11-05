@@ -1,45 +1,66 @@
-# Dataset
-data/
-*.parquet
+# =============================================================================
+# .gitignore — Explainable Multimodal Quantum-GNN CXR Diagnosis
+# =============================================================================
 
-# Python environment
+# --- Python & Environments ---
 .venv/
 venv/
 env/
+ENV/
 __pycache__/
 *.py[cod]
-*.egg-info/
+*$py.class
+*.so
 
-# Model weights and checkpoints
-*.pth
-*.pt
-*.ckpt
-*.onnx
-checkpoints/
-weights/
-
-# Generated outputs and logs
-outputs/
-logs/
-runs/
-wandb/
-mlruns/
-*.log
-
-# Jupyter
-.ipynb_checkpoints/
-
-# Secrets
-.env
-.env.*
-
-# IDE and OS
-.vscode/
-.idea/
-.DS_Store
-Thumbs.db
-
-# Test output files
+# --- Testing & Code Quality ---
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 all_test_output.txt
 audit_output.txt
 test_output.txt
+
+# --- Datasets & Raw Cache (Keep repository lightweight & under 100MB) ---
+data/
+*.arrow
+*.parquet
+*.csv.gz
+*.tar
+*.tar.gz
+*.zip
+
+# --- Model Checkpoints & Weights ---
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.bin
+*.onnx
+
+# --- Outputs, Logs & Experiment Runs ---
+outputs/
+logs/
+results/
+runs/
+wandb/
+*.log
+
+# --- Jupyter Notebooks ---
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# --- IDEs & OS Files ---
+.vscode/
+.idea/
+*.sublime-project
+*.sublime-workspace
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Secrets & Environment Variables ---
+.env
+.env.*
+!.env.example
