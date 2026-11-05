@@ -130,6 +130,48 @@ class LabelEncoder:
 _DEFAULT_ENCODER = LabelEncoder()
 
 
+def safe_parse_labels(raw_val: Any) -> List[int]:
+    """Safely parse label list from strings, lists, numpy arrays, or CSV serialization.
+
+    Handles:
+      - '[np.int32(2), np.int32(11)]' (from pandas CSV with numpy dtypes)
+      - '[2, 11]' (standard python list string)
+      - list or tuple of ints
+      - numpy ndarray
+      - empty / None / NaN values -> returns [0] (No Finding)
+    """
+    import ast
+    import re
+    import numpy as np
+
+    if raw_val is None:
+        return [0]
+    if isinstance(raw_val, float) and np.isnan(raw_val):
+        return [0]
+    if isinstance(raw_val, (list, tuple)):
+        return [int(x) for x in raw_val]
+    if isinstance(raw_val, np.ndarray):
+        return [int(x) for x in raw_val.tolist()]
+    if hasattr(raw_val, "tolist") and callable(raw_val.tolist):
+        return [int(x) for x in raw_val.tolist()]
+
+    if isinstance(raw_val, str):
+        cleaned = re.sub(r'(?:np\.)?int\d+\((\d+)\)', r'\1', raw_val).strip()
+        if not cleaned or cleaned in ("[]", "nan", "None", "set()"):
+            return [0]
+        try:
+            parsed = ast.literal_eval(cleaned)
+            if isinstance(parsed, (list, tuple, set)):
+                return [int(x) for x in parsed]
+            elif isinstance(parsed, (int, float)):
+                return [int(parsed)]
+        except Exception:
+            nums = re.findall(r'(?<!int)\b(\d+)\b', cleaned)
+            if nums:
+                return [int(x) for x in nums]
+    return [0]
+
+
 def encode_labels(nih_label_list: Sequence[int]) -> torch.Tensor:
     """Module-level convenience: encode a HF labels list to [14] float tensor."""
     return _DEFAULT_ENCODER.encode(nih_label_list)

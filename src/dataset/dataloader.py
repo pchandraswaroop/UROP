@@ -29,7 +29,7 @@ except ImportError:  # pragma: no cover
     HFDataset = None  # type: ignore[assignment,misc]  # optional at import time
 from PIL import Image
 
-from src.dataset.label_encoder import LabelEncoder, encode_labels
+from src.dataset.label_encoder import LabelEncoder, encode_labels, safe_parse_labels
 from src.dataset.preprocessor import get_transforms, MetadataEncoder
 
 logger = logging.getLogger(__name__)
@@ -82,11 +82,8 @@ class CXRDataset(Dataset):
         # ── Labels ─────────────────────────────────────────────────────────
         # labels_raw may be stored as a list of ints or an array; fallback to labels if labels_raw missing
         labels_raw = row["labels_raw"] if "labels_raw" in row else row["labels"]
-        if isinstance(labels_raw, str):
-            # CSV serialisation turns lists into strings; parse safely
-            import ast
-            labels_raw = ast.literal_eval(labels_raw)
-        label_tensor = self.label_encoder.encode(labels_raw)  # [14]
+        parsed_labels = safe_parse_labels(labels_raw)
+        label_tensor = self.label_encoder.encode(parsed_labels)  # [14]
 
         # ── Metadata ───────────────────────────────────────────────────────
         meta_tensor = self.meta_encoder.encode_row(

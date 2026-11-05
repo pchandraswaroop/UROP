@@ -87,19 +87,15 @@ def compute_pos_weights(
     Returns:
         [14] float tensor of positive weights.
     """
-    import ast
+    from src.dataset.label_encoder import safe_parse_labels
 
     N = len(train_df)
     pos_counts = np.zeros(num_classes)
 
     label_col = "labels_raw" if "labels_raw" in train_df.columns else "labels"
-    for labels_raw in train_df[label_col]:
-        if isinstance(labels_raw, str):
-            try:
-                labels_raw = ast.literal_eval(labels_raw)
-            except Exception:
-                continue
-        for nih_idx in labels_raw:
+    for raw_item in train_df[label_col]:
+        parsed = safe_parse_labels(raw_item)
+        for nih_idx in parsed:
             if nih_idx == 0:
                 continue  # No Finding
             disease_idx = nih_idx - 1

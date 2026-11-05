@@ -144,20 +144,11 @@ class PatientGraphBuilder:
 
     def _aggregate_patients(self, train_df: pd.DataFrame) -> pd.DataFrame:
         """Group by patient_id, keeping representative age/sex and merged labels."""
-        import ast
-
-        def parse_labels(x):
-            if isinstance(x, str):
-                try:
-                    return ast.literal_eval(x)
-                except Exception:
-                    return []
-            if isinstance(x, list):
-                return x
-            return []
+        from src.dataset.label_encoder import safe_parse_labels
 
         df = train_df.copy()
-        df["labels_parsed"] = df["labels_raw"].apply(parse_labels)
+        label_col = "labels_raw" if "labels_raw" in df.columns else "labels"
+        df["labels_parsed"] = df[label_col].apply(safe_parse_labels)
 
         # Per-patient: use median age, mode sex, union of all labels seen
         agg = df.groupby("patient_id").agg(
@@ -357,18 +348,12 @@ class ScanGraphBuilder:
         y = None
         if label_col is not None:
             from src.dataset.label_encoder import LabelEncoder
+            from src.dataset.label_encoder import safe_parse_labels
             encoder = LabelEncoder()
             y_list = []
             for item in df[label_col]:
-                if isinstance(item, str):
-                    import ast
-                    try:
-                        item = ast.literal_eval(item)
-                    except Exception:
-                        item = []
-                elif hasattr(item, "tolist"):
-                    item = item.tolist()
-                y_list.append(encoder.encode(item if isinstance(item, (list, tuple)) else []))
+                parsed = safe_parse_labels(item)
+                y_list.append(encoder.encode(parsed))
             y = torch.stack(y_list)  # [N, 14]
 
         logger.info(
