@@ -271,7 +271,7 @@ cells.append(nbf.v4.new_code_cell("""# ── Cell 4: Sample Visualization & Pre
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from src.dataset.label_encoder import safe_parse_labels, DISEASE_LABEL_NAMES
+from src.dataset.label_encoder import safe_parse_labels, NIH_LABEL_NAMES, DISEASE_LABEL_NAMES
 from src.dataset.preprocessor import MetadataEncoder, get_transforms
 
 # 1. Visualize 4 sample training X-rays with multi-label findings
@@ -284,8 +284,10 @@ for ax, idx in zip(axes, sample_indices):
     hf_idx = int(row["hf_index"])
     img = hf_dataset[hf_idx]["image"]
     raw_labels = row["labels_raw"] if "labels_raw" in row else row["labels"]
-    parsed = safe_parse_labels(raw_labels)
-    label_str = ", ".join(parsed) if parsed else "No Finding"
+    parsed_indices = safe_parse_labels(raw_labels)
+    # Map NIH integer indices (1-14) to disease names; index 0 is "No Finding"
+    disease_names = [NIH_LABEL_NAMES[i] for i in parsed_indices if 0 < i < len(NIH_LABEL_NAMES)]
+    label_str = ", ".join(disease_names) if disease_names else "No Finding"
     
     ax.imshow(img, cmap="gray")
     ax.set_title(f"Patient {row['patient_id']}\\nAge: {row['age']} | Sex: {row['sex']}\\nLabels: {label_str}", fontsize=8)
