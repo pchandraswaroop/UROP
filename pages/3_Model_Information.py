@@ -162,11 +162,11 @@ with col_left:
         """
     )
 
-    st.markdown("### 2. Longitudinal Scan Graph & GNN Branch")
+    st.markdown("### 2. Patient Scan Graph & GNN Branch")
     st.markdown(
         r"""
-        - **Node Connectivity:** Edges exist strictly between radiographs of the **same patient** (`patient_id[i] == patient_id[j]`).
-        - **Zero Label Leakage:** Node features contain only normalized age and binary sex. Target disease labels are **never** present in input graphs.
+        - **Node Connectivity:** Edges exist strictly between radiographs of the **same patient** (`patient_id[i] == patient_id[j]`) to model inter-scan visual relationships.
+        - **Zero Label Leakage:** Node features contain scan visual representations concatenated with normalized age and binary sex. Target disease labels are **never** present in input graphs.
         - **Architecture:** 2-layer GraphSAGE (`SAGEConv`) with Mean Aggregation and Layer Normalization.
         - **Self-Loops:** Added to all nodes to preserve ego-scan features during message passing.
         """

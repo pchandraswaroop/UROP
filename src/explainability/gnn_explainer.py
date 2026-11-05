@@ -1,6 +1,6 @@
 """
-gnn_explainer.py — Graph Explanation for Scan-to-Scan Longitudinal Relationships
-================================================================================
+gnn_explainer.py — Graph Explanation for Inter-Scan Patient Relationships
+========================================================================
 Identifies the most influential neighboring scan nodes and edges within the
 patient-based scan graph for individual disease outputs.
 

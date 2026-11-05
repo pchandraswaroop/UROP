@@ -151,8 +151,8 @@ class ExplanationService:
                 "message": (
                     "Single-Scan Graph Note: The current inference is performed on a single radiograph. "
                     "The scan-to-scan graph connects multiple radiographs belonging to the same patient "
-                    "to capture longitudinal history. With only 1 scan provided, the graph consists of an isolated "
-                    "node with a self-loop. Edge ablation analysis requires longitudinal multi-scan history."
+                    "to capture inter-scan visual relationships. With only 1 scan provided, the graph consists of an isolated "
+                    "node with a self-loop. Edge ablation analysis requires companion scans from the patient."
                 ),
             }
 

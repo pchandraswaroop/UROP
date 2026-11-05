@@ -170,6 +170,8 @@ def build_model(
     if cfg is None:
         cfg = {}
 
+    exp = experiment.lower().strip()
+
     # Resolve per-experiment backbone
     backbone = _resolve(cfg, "image_backbone", "efficientnet_b0")
     backbone_dim = _BACKBONE_DIMS.get(backbone, 512)
@@ -184,13 +186,11 @@ def build_model(
     zero_dim    = _resolve(cfg, "zero_image_dim",        _DEFAULTS["zero_image_dim"])
 
     # Quantum enabled: if explicitly configured in cfg, respect it;
-    # otherwise default to False on CPU (to avoid slow CPU simulations) and True on CUDA
+    # otherwise for quantum experiment variants, enable whenever PennyLane is available
     if "quantum_enabled" in cfg:
         quantum_enabled = bool(cfg["quantum_enabled"])
     else:
-        quantum_enabled = False if device == "cpu" else True
-
-    exp = experiment.lower().strip()
+        quantum_enabled = True if "quantum" in exp else False
 
     # ------------------------------------------------------------------
     # cnn_only
@@ -327,6 +327,34 @@ def build_model(
                                   use_disease_specific_fusion=True)
 
     # ------------------------------------------------------------------
+    # cnn_gnn_multimodal / classical_gnn_multimodal (Ablation: CNN + GNN + Clinical MLP)
+    # ------------------------------------------------------------------
+    elif exp in ("cnn_gnn_multimodal", "classical_gnn_multimodal"):
+        img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
+        q    = IdentityQuantumLayer(input_dim=img.feature_dim, output_dim=q_out)
+        clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
+        gnn_node_dim = q_out + 2
+        try:
+            from src.models.gnn_branch import GNNBranch, TG_AVAILABLE
+            if TG_AVAILABLE:
+                gnn = GNNBranch(node_feat_dim=gnn_node_dim, hidden_dim=64, output_dim=clin_out,
+                                n_layers=2, dropout=dropout)
+            else:
+                gnn = None
+        except (ImportError, Exception):
+            gnn = None
+
+        fuse = DiseaseSpecificFusion(image_dim=q_out, clinical_dim=clin_out,
+                                     gnn_dim=clin_out if gnn is not None else None,
+                                     fused_dim=fused_ds, num_classes=num_classes,
+                                     dropout=dropout)
+        cls  = DiseaseSpecificClassifier(fused_dim=fused_ds, hidden_dim=cls_hidden,
+                                         num_classes=num_classes, dropout=dropout)
+        return MultiModalCXRModel(img, clin, q, fuse, cls,
+                                  gnn_branch=gnn,
+                                  use_disease_specific_fusion=True)
+
+    # ------------------------------------------------------------------
     # shared_fusion
     # ------------------------------------------------------------------
     elif exp == "shared_fusion":
@@ -345,6 +373,7 @@ def build_model(
         supported = [
             "cnn_only", "vit_only", "quantum_cnn", "mlp_clinical_only",
             "gnn_only", "classical_multimodal", "quantum_gnn_multimodal",
+            "cnn_gnn_multimodal", "classical_gnn_multimodal",
             "disease_specific_fusion", "shared_fusion",
         ]
         raise ValueError(
@@ -372,6 +401,8 @@ def list_experiments() -> list:
         "gnn_only",
         "classical_multimodal",
         "quantum_gnn_multimodal",
+        "cnn_gnn_multimodal",
+        "classical_gnn_multimodal",
         "disease_specific_fusion",
         "shared_fusion",
     ]

@@ -164,7 +164,7 @@ with tab_graph:
 
     if graph_exp["status"] == "success":
         st.pyplot(graph_exp["figure"])
-        st.markdown("#### Influential Longitudinal Connections")
+        st.markdown("#### Influential Inter-Scan Connections")
         st.write(graph_exp["edge_importance"])
     elif graph_exp["status"] == "single_scan_note":
         st.info(graph_exp["message"], icon="ℹ️")
@@ -172,8 +172,8 @@ with tab_graph:
             """
             **Clinical Graph Rationale:**
             - In the NIH ChestX-ray14 dataset, graph edges connect scans belonging to the **same patient** (`patient_id[i] == patient_id[j]`).
-            - This captures longitudinal disease progression and patient biology across multiple clinical visits.
-            - When predicting a single isolated scan, no prior examinations exist in the query batch, so the graph operates with a self-loop.
+            - This captures inter-scan visual relationships and shared patient biology across multiple clinical examinations.
+            - When predicting a single isolated scan, no companion examinations exist in the query batch, so the graph operates with a self-loop.
             """
         )
     elif graph_exp["status"] == "unavailable":

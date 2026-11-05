@@ -443,7 +443,7 @@ def evaluate_scan_count_subgroups(
 
     Divides test-set patients into:
       - Single-scan subgroup: Patients with exactly 1 radiograph in the dataset.
-      - Multi-scan subgroup: Patients with >1 longitudinal radiographs in the dataset.
+      - Multi-scan subgroup: Patients with >1 radiographs in the dataset.
 
     Returns:
         DataFrame summarizing AUROC and sample counts across subgroups.
@@ -520,7 +520,7 @@ This report evaluates three controlled architectures trained on identical patien
 ### Hypothesis 2: Does the Quantum-GNN Architecture Provide Additional Benefits?
 - By comparing **`quantum_gnn_multimodal`** against **`classical_multimodal`**, we isolate the combined contribution of:
   1. **Quantum Hilbert Space Mapping:** Parameterized variational entanglement gates capturing high-order non-linear correlations between subtle visual patterns.
-  2. **Patient Scan Graph:** Message passing across longitudinal exams from the same patient cohort to model disease progression.
+  2. **Patient Scan Graph:** Message passing across multiple radiographs from the same patient to model inter-scan visual relationships.
   3. **Disease-Specific Gating:** Independent gating heads preventing cross-task gradient interference across distinct pathologies.
 
 ---

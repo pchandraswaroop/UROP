@@ -288,7 +288,7 @@ class ScanGraphBuilder:
     Clinical Rationale:
       - NODES: Each scan (radiograph record) is a distinct node.
       - EDGES: Connect scans (i, j) if they belong to the same patient (patient_id[i] == patient_id[j]).
-        This directly captures longitudinal examination history and shared patient biology.
+        This directly captures inter-scan visual relationships and shared patient biology across examinations.
       - ZERO LABEL LEAKAGE: Edges are built strictly from patient_id, NEVER from disease labels.
       - SELF-LOOPS: Optional self-loops (i, i) ensure scans with only a single examination in the
         cohort/batch can still aggregate their own node features through message-passing.

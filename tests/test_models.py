@@ -163,6 +163,22 @@ class TestQuantumLayer:
         model = build_model("quantum_cnn", cfg={"quantum_enabled": True}, pretrained=False)
         assert isinstance(model.quantum_layer, QuantumLayer)
 
+    def test_quantum_gradients_propagate_through_circuit(self):
+        """Verify quantum weights and input features receive valid non-zero gradients."""
+        from src.models.quantum_layer import QuantumLayer, PENNYLANE_AVAILABLE
+        if not PENNYLANE_AVAILABLE:
+            pytest.skip("PennyLane not installed.")
+        layer = QuantumLayer(input_dim=16, n_qubits=4, n_layers=2, output_dim=8)
+        x = torch.randn(2, 16, requires_grad=True)
+        out = layer(x)
+        loss = out.sum()
+        loss.backward()
+        assert layer.quantum_weights.grad is not None
+        assert not torch.isnan(layer.quantum_weights.grad).any()
+        assert (layer.quantum_weights.grad.abs().sum().item()) > 0.0
+        assert x.grad is not None
+        assert not torch.isnan(x.grad).any()
+
 
 # =============================================================================
 # MetadataEmbedder
@@ -317,6 +333,7 @@ EXPERIMENT_NAMES = [
     "gnn_only",
     "classical_multimodal",
     "quantum_gnn_multimodal",
+    "cnn_gnn_multimodal",
     "disease_specific_fusion",
     "shared_fusion",
 ]

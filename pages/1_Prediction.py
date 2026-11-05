@@ -119,12 +119,12 @@ with col_input:
             if n_scans > 1 and confirm_same_patient:
                 st.info(
                     f"🔗 **Multi-Scan Graph Active:** {n_scans} scans will be structured into a patient-specific graph. "
-                    f"The GNN branch will learn longitudinal inter-scan relationships to support diagnosis."
+                    f"The GNN branch will learn inter-scan visual relationships to support diagnosis."
                 )
             elif n_scans == 1:
                 st.caption(
                     "ℹ️ **Single-Scan Mode:** A 1-node patient graph with a self-loop will be constructed. "
-                    "The GNN executes self-aggregation (no longitudinal history to aggregate)."
+                    "The GNN executes self-aggregation (no companion scans to aggregate)."
                 )
 
     elif use_sample:
@@ -264,7 +264,7 @@ with col_output:
         # Graph Context Banner
         if curr_result.is_multi_scan:
             st.success(
-                f"🔗 **Patient Scan Graph Analyzed:** {curr_result.node_count} longitudinal scans connected by "
+                f"🔗 **Patient Scan Graph Analyzed:** {curr_result.node_count} patient scans connected by "
                 f"{curr_result.edge_count} relational edges. Displaying primary findings for Scan #{curr_result.primary_scan_index + 1}.",
                 icon="🩻",
             )
