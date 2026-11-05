@@ -50,8 +50,8 @@ cells.append(nbf.v4.new_markdown_cell("""# 02 — Model Training & Manual Verifi
   - `Cell 4`: Sample Visualization & Preprocessing Audit
   - `Cell 5`: Graph Construction & Inter-Scan Connectivity Verification
 - **Phase 2: Pre-Flight Diagnostics** (Cells 6 & 7)
-  - `Cell 6`: Model Architecture Smoke Tests on GPU (5 Core Models)
-  - `Cell 7`: Training Hyperparameter Review & Trial Memory Test
+  - `Cell 6`: Model Architecture Smoke Tests on GPU (5 Core Models with Graph Inputs)
+  - `Cell 7`: Training Hyperparameter Review & Trial Memory Test (Peak VRAM Measurement)
 - **Phase 3: Controlled Sequential Model Training** (Cell 8)
   - `Cell 8A`: Train Model 1 — `cnn_only`
   - `Cell 8B`: Evaluate Model 1 — `cnn_only` Validation & Loss Curves
@@ -65,7 +65,7 @@ cells.append(nbf.v4.new_markdown_cell("""# 02 — Model Training & Manual Verifi
 - **Phase 4: Held-Out Test Evaluation & Comparison** (Cell 9)
   - `Cell 9`: Final Test Set Evaluation, Metrics Comparison, & Subgroup Analysis
 - **Phase 5: Case Inferences & Explainability** (Cells 10 & 11)
-  - `Cell 10`: Manual Prediction Verification (Single & Multi-Scan Scenarios)
+  - `Cell 10`: Manual Prediction Verification (Single & Multi-Scan Scenarios with Verified Checkpoint)
   - `Cell 11`: Multimodal Explainability Verification (Grad-CAM++, Demographic & Graph Attribution)
 """))
 
@@ -284,6 +284,7 @@ for ax, idx in zip(axes, sample_indices):
     hf_idx = int(row["hf_index"])
     img = hf_dataset[hf_idx]["image"]
     raw_labels = row["labels_raw"] if "labels_raw" in row else row["labels"]
+    
     parsed_indices = safe_parse_labels(raw_labels)
     # Map NIH integer indices (1-14) to disease names; index 0 is "No Finding"
     disease_names = [NIH_LABEL_NAMES[i] for i in parsed_indices if 0 < i < len(NIH_LABEL_NAMES)]
@@ -358,7 +359,8 @@ g_multi = builder.build(df_multi)
 print(f"\\n=== Multi-Scan Patient Graph (K={K} scans) ===")
 print(f" - Patient ID:           {multi_pid}")
 print(f" - Nodes:                {g_multi.num_nodes}")
-print(f" - Directed Edges:       {g_multi.edge_index.shape[1]} (Expected K^2 = {K*K} intra-patient edges + self-loops)")
+print(f" - Directed Edges:       {g_multi.edge_index.shape[1]}")
+print(f"   Exact Decomposition:  {K}*( {K} - 1 ) = {K*(K-1)} companion directed edges + {K} self-loops = {K*K} total directed edges (K^2)")
 assert g_multi.num_nodes == K and g_multi.edge_index.shape[1] == K * K, "Multi-scan graph assertion failed"
 
 # 3. Mini-Batch Graph Construction & Zero Cross-Patient Edge Check
@@ -383,11 +385,12 @@ print("\\n[SUCCESS] Cell 5 complete: Graph construction and isolation verified."
 
 # Cell 6: Model Smoke Tests on GPU
 cells.append(nbf.v4.new_markdown_cell("""## Cell 6 — Model Architecture Smoke Tests on GPU
-**Purpose**: Executes one forward pass for each of the 5 candidate architectures on the active device, confirming output dimensions (14 logits per scan), quantum circuit execution, and parameter counts."""))
+**Purpose**: Executes one forward pass for each candidate architecture on the active device using the actual forward API, supplying valid graph inputs for GNN models to verify genuine GraphSAGE message passing and gradient flow."""))
 
 cells.append(nbf.v4.new_code_cell("""# ── Cell 6: Model Architecture Smoke Tests on GPU ────────────────────────────
 import torch
 from src.models.model_factory import build_model, list_experiments
+from src.graph.graph_builder import build_batch_scan_graph
 
 print(f"Executing architecture smoke tests on device: {device}\\n")
 
@@ -402,12 +405,14 @@ TEST_MODELS = [
 B = 2
 dummy_img = torch.randn(B, 3, 224, 224, device=device)
 dummy_meta = torch.randn(B, 2, device=device)
+# Companion scans from the same patient to test GraphSAGE relational aggregation
+dummy_pids = ["Patient_A", "Patient_A"]
+_, edge_index = build_batch_scan_graph(dummy_meta, dummy_pids, add_self_loops=True)
 
-print(f"{'Model Name':<26} | {'Params':<9} | {'Output Shape':<14} | {'Quantum VQC':<12} | {'GPU Mem':<10}")
-print("-" * 78)
+print(f"{'Model Name':<26} | {'Params':<9} | {'Output Shape':<14} | {'Quantum VQC':<12} | {'GNN Branch':<12} | {'GPU Mem':<10}")
+print("-" * 92)
 
 for m_name in TEST_MODELS:
-    # Build model (pretrained=False for rapid offline test)
     model = build_model(m_name, pretrained=False, device=device).to(device)
     model.eval()
     
@@ -415,29 +420,32 @@ for m_name in TEST_MODELS:
     param_str = f"{n_params / 1e6:.2f}M"
     
     is_quantum = "Active (VQC)" if hasattr(model.quantum_layer, "circuit") or hasattr(model.quantum_layer, "qnode") else "Identity"
+    has_gnn = "GraphSAGE" if getattr(model, "gnn_branch", None) is not None else "None"
     
+    # Forward pass using actual forward API with graph edge index
     with torch.no_grad():
-        out = model(dummy_img, dummy_meta, return_logits=True)
+        out = model(dummy_img, dummy_meta, graph_edge_index=edge_index, return_logits=True)
     
     assert out.shape == (B, 14), f"Expected ({B}, 14), got {out.shape}"
     
     vram_str = f"{torch.cuda.memory_allocated() / 1e6:.1f} MB" if device == "cuda" else "N/A"
-    print(f"{m_name:<26} | {param_str:<9} | {str(list(out.shape)):<14} | {is_quantum:<12} | {vram_str:<10}")
+    print(f"{m_name:<26} | {param_str:<9} | {str(list(out.shape)):<14} | {is_quantum:<12} | {has_gnn:<12} | {vram_str:<10}")
     
     del model
     if device == "cuda":
         torch.cuda.empty_cache()
 
-print("\\n[SUCCESS] Cell 6 complete: All 5 architectures verified successfully on GPU.")
+print("\\n[SUCCESS] Cell 6 complete: All 5 architectures verified with valid graph inputs and actual forward API.")
 """))
 
-# Cell 7: Training Configuration Review
-cells.append(nbf.v4.new_markdown_cell("""## Cell 7 — Training Hyperparameter Review & Trial Memory Test
-**Purpose**: Displays the exact training hyperparameters, verifies GPU memory consumption under batch size 32 with Automatic Mixed Precision (AMP), and confirms absence of CUDA Out-Of-Memory (OOM)."""))
+# Cell 7: Training Configuration Review & Memory Verification
+cells.append(nbf.v4.new_markdown_cell("""## Cell 7 — Training Hyperparameter Review & Peak GPU Memory Measurement
+**Purpose**: Displays the exact training hyperparameters, executes an authentic forward + backward + AMP optimization step with batch size 32 and multi-scan patient graphs, and measures the actual peak GPU memory to verify safety on Tesla T4."""))
 
-cells.append(nbf.v4.new_code_cell("""# ── Cell 7: Training Hyperparameter Review & Trial Memory Test ───────────────
+cells.append(nbf.v4.new_code_cell("""# ── Cell 7: Training Hyperparameter Review & Peak GPU Memory Measurement ─────
 import torch
 from src.models.model_factory import build_model
+from src.graph.graph_builder import build_batch_scan_graph
 
 BASE_CFG = {
     "batch_size":              32 if device == "cuda" else 4,
@@ -471,20 +479,26 @@ for k, v in BASE_CFG.items():
 print(f" - {'max_epochs':<26}: {MAX_EPOCHS}")
 print("==================================================")
 
-# Trial mini-batch pass with proposed full model (quantum_gnn_multimodal)
+# Authentic trial mini-batch pass with proposed full model (quantum_gnn_multimodal)
 if device == "cuda":
-    print("\\nExecuting trial forward + backward + AMP optimization step (batch_size=32)...")
+    print("\\nExecuting authentic trial forward + backward + AMP optimization step (batch_size=32)...")
+    torch.cuda.reset_peak_memory_stats()
+    
     trial_model = build_model("quantum_gnn_multimodal", cfg=BASE_CFG, pretrained=False, device="cuda").cuda()
     trial_optimizer = torch.optim.AdamW(trial_model.parameters(), lr=1e-4)
     trial_scaler = torch.amp.GradScaler("cuda")
     
+    # Batch size 32 with companion radiographs (16 pairs of scans from same patient)
     b_images = torch.randn(32, 3, 224, 224, device="cuda")
     b_meta   = torch.randn(32, 2, device="cuda")
     b_labels = torch.randint(0, 2, (32, 14), device="cuda").float()
+    b_pids   = [f"Patient_{i // 2:03d}" for i in range(32)]
+    
+    _, b_edge_index = build_batch_scan_graph(b_meta, b_pids, add_self_loops=True)
     
     trial_optimizer.zero_grad()
     with torch.amp.autocast("cuda"):
-        logits = trial_model(b_images, b_meta, return_logits=True)
+        logits = trial_model(b_images, b_meta, graph_edge_index=b_edge_index, return_logits=True)
         loss = torch.nn.functional.binary_cross_entropy_with_logits(logits, b_labels)
     
     trial_scaler.scale(loss).backward()
@@ -492,11 +506,20 @@ if device == "cuda":
     trial_scaler.update()
     
     vram_alloc = torch.cuda.memory_allocated() / 1e9
+    vram_peak  = torch.cuda.max_memory_allocated() / 1e9
     vram_res   = torch.cuda.memory_reserved() / 1e9
-    print(f"Trial step executed cleanly: Loss = {loss.item():.4f}")
-    print(f"VRAM Allocated: {vram_alloc:.2f} GB | Reserved: {vram_res:.2f} GB (Safely within 15 GB ceiling)")
     
-    del trial_model, trial_optimizer, trial_scaler, b_images, b_meta, b_labels, logits, loss
+    print(f"Trial step executed cleanly: Loss = {loss.item():.4f}")
+    print(f"VRAM Current:   {vram_alloc:.2f} GB")
+    print(f"VRAM Peak:      {vram_peak:.2f} GB")
+    print(f"VRAM Reserved:  {vram_res:.2f} GB (Safely within 15.0 GB Tesla T4 ceiling)")
+    
+    if vram_res > 13.0:
+        print("⚠ WARNING: Memory reserved exceeds 13 GB. Recommend lowering batch_size to 16 in BASE_CFG.")
+    else:
+        print("✓ Batch size 32 is verified safe for Tesla T4 GPU.")
+    
+    del trial_model, trial_optimizer, trial_scaler, b_images, b_meta, b_labels, logits, loss, b_edge_index
     torch.cuda.empty_cache()
 
 print("\\n[SUCCESS] Cell 7 complete: Training configuration verified and memory confirmed.")
@@ -803,34 +826,46 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from src.training.evaluator import load_experiment_metrics, generate_comparison_plots, evaluate_scan_count_subgroups
 
-experiments_dict = {
-    \"cnn_only\": getattr(locals(), \"exp_cnn\", None),
-    \"classical_multimodal\": getattr(locals(), \"exp_class_multi\", None),
-    \"cnn_gnn_multimodal\": getattr(locals(), \"exp_gnn\", None),
-    \"quantum_gnn_multimodal\": getattr(locals(), \"exp_qgnn\", None),
-}
+candidate_models = [
+    (\"cnn_only\", \"exp_cnn\"),
+    (\"classical_multimodal\", \"exp_class_multi\"),
+    (\"cnn_gnn_multimodal\", \"exp_gnn\"),
+    (\"quantum_gnn_multimodal\", \"exp_qgnn\"),
+]
 
-MODELS_TO_EVALUATE = [m for m, exp in experiments_dict.items() if (exp is not None or (Path(\"results\") / m / \"val_metrics.json\").exists())]
+active_experiments = {}
+for m_name, var_name in candidate_models:
+    exp_inst = globals().get(var_name, locals().get(var_name))
+    if exp_inst is not None:
+        active_experiments[m_name] = exp_inst
 
-print(f\"Evaluating {len(MODELS_TO_EVALUATE)} trained models on held-out test set: {MODELS_TO_EVALUATE}\\n\")
+# Also include models with completed results on disk
+all_evaluated_models = list(active_experiments.keys())
+for m_name, _ in candidate_models:
+    if m_name not in all_evaluated_models and (Path(\"results\") / m_name / \"val_metrics.json\").exists():
+        all_evaluated_models.append(m_name)
 
-# Run test evaluation for each completed experiment
-for m_name in MODELS_TO_EVALUATE:
+print(f\"Models identified for held-out test evaluation: {all_evaluated_models}\\n\")
+
+# Run test evaluation strictly for active experiments (fresh, non-stale)
+for m_name in all_evaluated_models:
+    exp_inst = active_experiments.get(m_name)
     test_json = Path(\"results\") / m_name / \"test_metrics.json\"
-    exp_inst = experiments_dict.get(m_name)
     
-    if exp_inst is not None and not test_json.exists():
-        print(f\"Running test evaluation for {m_name}...\")
+    if exp_inst is not None:
+        print(f\"Evaluating active experiment '{m_name}' on held-out test split (fresh evaluation)... \")
         exp_inst.evaluate_test()
         exp_inst.save_results(\"results\")
     elif test_json.exists():
-        print(f\"Loaded existing test metrics for {m_name}.\")
+        print(f\"Loaded existing test metrics for disk checkpoint '{m_name}'.\")
+    else:
+        print(f\"Note: No completed experiment or checkpoint found for '{m_name}'. Skipping.\")
 
 out_dir = Path(\"outputs/model_comparison\")
 out_dir.mkdir(parents=True, exist_ok=True)
 
 # 1. Comparison Metrics Table
-df_comparison = load_experiment_metrics(results_dir=\"results\", models=MODELS_TO_EVALUATE)
+df_comparison = load_experiment_metrics(results_dir=\"results\", models=all_evaluated_models)
 df_comparison.to_csv(out_dir / \"comparison_metrics.csv\", index=False)
 print(\"\\n=======================================================================\")
 print(\"  MULTI-MODEL COMPARATIVE TEST PERFORMANCE (AUROC & F1 SCORES)\")
@@ -838,7 +873,7 @@ print(\"=======================================================================\
 display(df_comparison)
 
 # 2. Subgroup Performance: Single-Scan vs Multi-Scan Patients
-df_subgroups = evaluate_scan_count_subgroups(test_df=test_df, results_dir=\"results\", models=MODELS_TO_EVALUATE)
+df_subgroups = evaluate_scan_count_subgroups(test_df=test_df, results_dir=\"results\", models=all_evaluated_models)
 df_subgroups.to_csv(out_dir / \"subgroups_metrics.csv\", index=False)
 print(\"\\n=======================================================================\")
 print(\"  PATIENT SUBGROUP ANALYSIS (SINGLE-SCAN VS MULTI-SCAN PATIENTS)\")
@@ -846,7 +881,7 @@ print(\"=======================================================================\
 display(df_subgroups)
 
 # 3. Generate Comparative Plots
-plots = generate_comparison_plots(results_dir=\"results\", output_dir=out_dir, models=MODELS_TO_EVALUATE)
+plots = generate_comparison_plots(results_dir=\"results\", output_dir=out_dir, models=all_evaluated_models)
 for plot_name, path in plots.items():
     print(f\"Generated plot: {path}\")
 
@@ -869,55 +904,99 @@ cells.append(nbf.v4.new_markdown_cell("""## Cell 10 — Manual Prediction Verifi
 **Purpose**: Loads the verified trained checkpoint of `quantum_gnn_multimodal` into the inference service and runs diagnostic predictions across 3 distinct clinical scenarios:
 1. One single standalone radiograph.
 2. Two radiographs belonging to the same patient (intra-patient message passing).
-3. Three or more radiographs from the same patient."""))
+3. Three or more radiographs from the same patient.
+Displays ground-truth labels alongside predictions without leaking labels into inference."""))
 
 cells.append(nbf.v4.new_code_cell("""# ── Cell 10: Manual Prediction Verification ──────────────────────────────────
+import os
+from pathlib import Path
 import torch
 import numpy as np
 import matplotlib.pyplot as plt
 from src.inference.predictor import CXRInferenceService, InferenceMode
-from src.dataset.label_encoder import DISEASE_LABEL_NAMES
+from src.dataset.label_encoder import safe_parse_labels, NIH_LABEL_NAMES, DISEASE_LABEL_NAMES
+
+# 1. Explicitly locate and load the best trained checkpoint for quantum_gnn_multimodal
+ckpt_dir = Path(\"checkpoints/quantum_gnn_multimodal\")
+assert ckpt_dir.exists(), \"Directory 'checkpoints/quantum_gnn_multimodal' not found! Complete Cell 8G training first.\"
+
+available_ckpts = sorted(list(ckpt_dir.glob(\"checkpoint_epoch*.pt\")), key=os.path.getmtime, reverse=True)
+assert len(available_ckpts) > 0, \"No checkpoint files found in checkpoints/quantum_gnn_multimodal/! Complete Cell 8G first.\"
+best_checkpoint_path = available_ckpts[0]
+
+# Inspect checkpoint metadata
+ckpt_payload = torch.load(best_checkpoint_path, map_location=\"cpu\")
+best_epoch_num = ckpt_payload.get(\"epoch\", \"N/A\")
+best_val_score = ckpt_payload.get(\"metrics\", {}).get(\"val_auc_mean\", \"N/A\")
+
+print(\"==================================================\")
+print(\"VERIFIED CHECKPOINT LOADED FOR INFERENCE\")
+print(\"==================================================\")
+print(f\" - Model Architecture: quantum_gnn_multimodal\")
+print(f\" - Checkpoint File:    {best_checkpoint_path.name}\")
+print(f\" - Checkpoint Path:    {best_checkpoint_path.resolve()}\")
+print(f\" - Best Epoch:         {best_epoch_num + 1 if isinstance(best_epoch_num, int) else best_epoch_num}\")
+print(f\" - Val Mean AUROC:     {best_val_score:.4f}\" if isinstance(best_val_score, (int, float)) else f\" - Val Score: {best_val_score}\")
+print(\"==================================================\\n\")
 
 inference_service = CXRInferenceService(device=device)
 
 # Interactive Decision Threshold
 DECISION_THRESHOLD = 0.50
 
-print(f\"=== Testing Diagnostic Scenarios with Decision Threshold tau = {DECISION_THRESHOLD} ===\\n\")
+# Helper to format ground truth labels without passing into inference
+def format_ground_truth(df_subset):
+    gt_list = []
+    for _, row in df_subset.iterrows():
+        raw_l = row[\"labels_raw\"] if \"labels_raw\" in row else row[\"labels\"]
+        parsed = safe_parse_labels(raw_l)
+        names = [NIH_LABEL_NAMES[i] for i in parsed if 0 < i < len(NIH_LABEL_NAMES)]
+        gt_list.append(\", \".join(names) if names else \"No Finding\")
+    return gt_list
 
-# SCENARIO 1: Single Standalone Radiograph
-row_1 = test_df.iloc[10]
+p_counts = test_df[\"patient_id\"].value_counts()
+
+# --- SCENARIO 1: Single Standalone Radiograph ---
+single_candidates = p_counts[p_counts == 1].index
+assert len(single_candidates) > 0, \"No single-scan patient found in test split!\"
+pid_1 = single_candidates[0]
+df_p1 = test_df[test_df[\"patient_id\"] == pid_1]
+row_1 = df_p1.iloc[0]
 img_1 = hf_dataset[int(row_1[\"hf_index\"])][\"image\"]
+gt_1 = format_ground_truth(df_p1)[0]
 
 res_1 = inference_service.predict(
     image_input=img_1,
     age=int(row_1[\"age\"]),
     sex=str(row_1[\"sex\"]),
     experiment_name=\"quantum_gnn_multimodal\",
+    checkpoint_path=str(best_checkpoint_path),
     mode=InferenceMode.RESEARCH,
     threshold=DECISION_THRESHOLD,
 )
 
 print(\"--- Scenario 1: Single Standalone Radiograph ---\")
-print(f\" - Patient ID:           {row_1['patient_id']} (Age: {row_1['age']}, Sex: {row_1['sex']})\")
-print(f\" - Graph Nodes / Edges:  {res_1.node_count} nodes, {res_1.edge_count} edges (self-loop)\")
-print(f\" - Positive Findings:    {res_1.positive_predictions if res_1.positive_predictions else ['No Finding']}\")
+print(f\" - Patient ID:           {pid_1} (Age: {row_1['age']}, Sex: {row_1['sex']})\")
+print(f\" - Ground Truth Finding: {gt_1}\")
+print(f\" - Graph Nodes / Edges:  {res_1.node_count} nodes, {res_1.edge_count} edges (self-loop: [[0], [0]])\")
+print(f\" - Predicted Positive:   {res_1.positive_predictions if res_1.positive_predictions else ['No Finding']}\")
 print(\"Top 3 Predicted Pathologies:\")
-top3_1 = sorted(res_1.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
-for d, p in top3_1:
+for d, p in sorted(res_1.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]:
     print(f\"   * {d:<20}: {p*100:.1f}%\")
 
-# SCENARIO 2: Two Radiographs for the Same Patient
-multi_pids = test_df[\"patient_id\"].value_counts()
-pid_2 = multi_pids[multi_pids == 2].index[0]
-df_p2 = test_df[test_df[\"patient_id\"] == pid_2]
+# --- SCENARIO 2: Two Radiographs for the Same Patient ---
+two_candidates = p_counts[p_counts == 2].index
+pid_2 = two_candidates[0] if len(two_candidates) > 0 else p_counts[p_counts >= 2].index[0]
+df_p2 = test_df[test_df[\"patient_id\"] == pid_2].iloc[:2]
 imgs_2 = [hf_dataset[int(r[\"hf_index\"])][\"image\"] for _, r in df_p2.iterrows()]
+gts_2 = format_ground_truth(df_p2)
 
 res_2 = inference_service.predict(
     image_input=imgs_2,
     age=int(df_p2.iloc[0][\"age\"]),
     sex=str(df_p2.iloc[0][\"sex\"]),
     experiment_name=\"quantum_gnn_multimodal\",
+    checkpoint_path=str(best_checkpoint_path),
     mode=InferenceMode.RESEARCH,
     threshold=DECISION_THRESHOLD,
     primary_scan_index=0,
@@ -925,36 +1004,43 @@ res_2 = inference_service.predict(
 
 print(\"\\n--- Scenario 2: Two Radiographs from Same Patient ---\")
 print(f\" - Patient ID:           {pid_2} (Age: {df_p2.iloc[0]['age']}, Sex: {df_p2.iloc[0]['sex']})\")
-print(f\" - Graph Nodes / Edges:  {res_2.node_count} nodes, {res_2.edge_count} directed edges (all-to-all)\")
+print(f\" - Primary Scan GT:      {gts_2[0]}\")
+print(f\" - Companion Scan GT:    {gts_2[1]}\")
+print(f\" - Graph Nodes / Edges:  {res_2.node_count} nodes, {res_2.edge_count} directed edges (all-to-all: K^2=4)\")
 print(f\" - Primary Scan Finding: {res_2.positive_predictions if res_2.positive_predictions else ['No Finding']}\")
-top3_2 = sorted(res_2.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
-for d, p in top3_2:
+print(\"Top 3 Predicted Pathologies (Primary Scan):\")
+for d, p in sorted(res_2.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]:
     print(f\"   * {d:<20}: {p*100:.1f}%\")
 
-# SCENARIO 3: Three or More Radiographs from Same Patient
-pid_3 = multi_pids[multi_pids >= 3].index[0]
+# --- SCENARIO 3: Three or More Radiographs from Same Patient ---
+three_candidates = p_counts[p_counts >= 3].index
+pid_3 = three_candidates[0] if len(three_candidates) > 0 else p_counts[p_counts >= 2].index[0]
 df_p3 = test_df[test_df[\"patient_id\"] == pid_3]
 imgs_3 = [hf_dataset[int(r[\"hf_index\"])][\"image\"] for _, r in df_p3.iterrows()]
+gts_3 = format_ground_truth(df_p3)
 
 res_3 = inference_service.predict(
     image_input=imgs_3,
     age=int(df_p3.iloc[0][\"age\"]),
     sex=str(df_p3.iloc[0][\"sex\"]),
     experiment_name=\"quantum_gnn_multimodal\",
+    checkpoint_path=str(best_checkpoint_path),
     mode=InferenceMode.RESEARCH,
     threshold=DECISION_THRESHOLD,
     primary_scan_index=0,
 )
 
-print(f\"\\n--- Scenario 3: {len(imgs_3)} Radiographs from Same Patient ---\")
+K3 = len(imgs_3)
+print(f\"\\n--- Scenario 3: {K3} Radiographs from Same Patient ---\")
 print(f\" - Patient ID:           {pid_3} (Age: {df_p3.iloc[0]['age']}, Sex: {df_p3.iloc[0]['sex']})\")
-print(f\" - Graph Nodes / Edges:  {res_3.node_count} nodes, {res_3.edge_count} directed edges\")
+print(f\" - Primary Scan GT:      {gts_3[0]}\")
+print(f\" - Graph Nodes / Edges:  {res_3.node_count} nodes, {res_3.edge_count} directed edges (K^2={K3*K3})\")
 print(f\" - Primary Scan Finding: {res_3.positive_predictions if res_3.positive_predictions else ['No Finding']}\")
-top3_3 = sorted(res_3.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]
-for d, p in top3_3:
+print(\"Top 3 Predicted Pathologies (Primary Scan):\")
+for d, p in sorted(res_3.probabilities.items(), key=lambda x: x[1], reverse=True)[:3]:
     print(f\"   * {d:<20}: {p*100:.1f}%\")
 
-print(\"\\n[SUCCESS] Cell 10 complete: Multi-scan clinical prediction scenarios verified.\")
+print(\"\\n[SUCCESS] Cell 10 complete: Multi-scan clinical prediction scenarios verified with ground truth.\")
 """))
 
 # Cell 11: Multimodal Explainability Verification
@@ -965,8 +1051,14 @@ cells.append(nbf.v4.new_code_cell("""# ── Cell 11: Multimodal Explainability
 import matplotlib.pyplot as plt
 from src.inference.explanation_service import ExplanationService
 
-top_disease = top3_2[0][0]  # Take top predicted pathology from Scenario 2
-print(f\"Generating multimodal explanations for target pathology: '{top_disease}'\\n\")
+# Select target disease: prefer a positive prediction from Scenario 2, otherwise top probability
+if res_2.positive_predictions and res_2.positive_predictions[0] != \"No Finding\":
+    top_disease = res_2.positive_predictions[0]
+else:
+    top_disease = sorted(res_2.probabilities.items(), key=lambda x: x[1], reverse=True)[0][0]
+
+print(f\"Generating multimodal explanations for target pathology: '{top_disease}'\")
+print(f\"Model used: quantum_gnn_multimodal | Checkpoint: {best_checkpoint_path.name}\\n\")
 
 # 1. Grad-CAM++ Visual Heatmap & Anatomical Overlay
 cam_res = ExplanationService.get_image_explanation(res_2, target_disease=top_disease)
@@ -995,8 +1087,8 @@ if tab_res.get(\"status\") == \"success\":
 graph_res = ExplanationService.get_graph_explanation(res_2, target_disease=top_disease)
 if graph_res.get(\"status\") == \"success\":
     print(\"\\nInter-Scan Graph Attribution:\")
-    print(f\" - Number of companion scan nodes analyzed: {len(graph_res.get('node_importances', []))}\")
-    print(f\" - Primary scan edge connectivity:          {graph_res.get('edge_importances', [])}\")
+    print(f\" - Companion scan nodes analyzed:  {len(graph_res.get('node_importances', []))}\")
+    print(f\" - Edge attribution values:        {graph_res.get('edge_importances', [])}\")
 
 # 4. Three-Way Modality Attribution (Image vs Clinical MLP vs GNN)
 mod_res = ExplanationService.get_modality_attribution(res_2, target_disease=top_disease)

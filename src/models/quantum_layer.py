@@ -137,15 +137,18 @@ class QuantumLayer(nn.Module):
         orig_device = x.device
         orig_dtype = x.dtype
 
-        # Project and squash to (-1, 1)
-        embedded = self.input_act(self.input_proj(x))  # [B, n_qubits]
+        # Under AMP (float16 / bfloat16), quantum simulation and projection requires float32
+        x_float = x.float()
 
-        # PennyLane default.qubit simulator executes in CPU space.
+        # Project and squash to (-1, 1)
+        embedded = self.input_act(self.input_proj(x_float))  # [B, n_qubits]
+
+        # PennyLane default.qubit simulator executes in CPU space with float32 precision.
         # Moving tensors to CPU avoids autoray device mismatch between GPU weights/inputs
         # and default.qubit's internal state. PyTorch autograd tracks transitions across
         # CPU/GPU boundaries during the backward pass seamlessly.
-        embedded_cpu = embedded.to("cpu")
-        weights_cpu = self.quantum_weights.to("cpu")
+        embedded_cpu = embedded.to("cpu", dtype=torch.float32)
+        weights_cpu = self.quantum_weights.to("cpu", dtype=torch.float32)
 
         # Handle 1D vs 2D
         is_1d = (embedded_cpu.ndim == 1)
@@ -172,9 +175,10 @@ class QuantumLayer(nn.Module):
         if is_1d:
             q_batch = q_batch.squeeze(0)
 
-        # Move back to original device and dtype for subsequent linear projection
-        q_batch = q_batch.to(device=orig_device, dtype=orig_dtype)
-        return self.output_proj(q_batch)  # [B, output_dim]
+        # Move back to original device in float32 for subsequent projection, then match orig_dtype
+        q_batch = q_batch.to(device=orig_device, dtype=torch.float32)
+        out = self.output_proj(q_batch)
+        return out.to(dtype=orig_dtype)
 
 
 # ── Fallback ──────────────────────────────────────────────────────────────────
