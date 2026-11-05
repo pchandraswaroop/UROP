@@ -156,6 +156,13 @@ class CheckpointManager:
         logger.info("Checkpoint saved: %s (score=%.4f)", path.name, score)
         return str(path)
 
+    @property
+    def best_path(self) -> Optional[Path]:
+        """Return Path to the highest-scoring checkpoint recorded."""
+        if self._history:
+            return self._history[0][1]
+        return None
+
     @staticmethod
     def load(path: str, model, optimizer=None, scheduler=None, device="cpu") -> int:
         ckpt = torch.load(path, map_location=device, weights_only=False)
@@ -245,6 +252,13 @@ class Trainer:
         self.scaler = torch.amp.GradScaler("cuda") if self.use_amp else None
         self.best_epoch: int = 0
 
+    @property
+    def best_checkpoint_path(self) -> Optional[str]:
+        """Return the filesystem path to the best saved checkpoint, if any."""
+        if self.ckpt_mgr and self.ckpt_mgr.best_path:
+            return str(self.ckpt_mgr.best_path)
+        return None
+
     # ------------------------------------------------------------------
     # Private helpers
     # ------------------------------------------------------------------
@@ -293,6 +307,9 @@ class Trainer:
         acc        = MetricAccumulator()
         total_loss = 0.0
         n_batches  = 0
+
+        if hasattr(loader, "batch_sampler") and hasattr(loader.batch_sampler, "set_epoch"):
+            loader.batch_sampler.set_epoch(epoch)
 
         for batch in loader:
             images = batch["image"].to(self.device)
@@ -459,6 +476,18 @@ class Trainer:
                             self.best_epoch + 1,
                         )
                         break
+
+        # Ensure model holds the best validation checkpoint weights
+        if self.early_stopping and self.early_stopping.restore_best_weights and self.early_stopping._best_weights is not None:
+            self.model.load_state_dict(self.early_stopping._best_weights)
+            logger.info(
+                "Restored best model weights from epoch %d (best val score: %.4f)",
+                self.best_epoch + 1,
+                self.early_stopping.best_score or float("nan"),
+            )
+        elif self.ckpt_mgr and self.ckpt_mgr.best_path:
+            CheckpointManager.load(str(self.ckpt_mgr.best_path), self.model, device=self.device)
+            logger.info("Restored best model weights from checkpoint: %s", self.ckpt_mgr.best_path.name)
 
         logger.info("Training complete.")
         return history

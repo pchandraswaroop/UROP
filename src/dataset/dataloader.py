@@ -104,6 +104,85 @@ class CXRDataset(Dataset):
         return item
 
 
+# ── Patient-Grouped Batch Sampler ───────────────────────────────────────────
+
+class PatientGroupedBatchSampler(torch.utils.data.Sampler):
+    """Batch sampler that groups all companion scans of a patient into the same batch.
+
+    Clinical & Graph Rationale:
+      - Inter-scan Graph Neural Network message passing operates over companion radiographs
+        of the SAME patient to contextualize diagnostic findings.
+      - Standard uniform random row sampling scatters multi-scan patient records across random
+        mini-batches, rendering inter-scan message passing inactive during training.
+      - PatientGroupedBatchSampler clusters dataset row indices by patient_id.
+      - At each epoch, patient clusters are randomly shuffled (if shuffle=True).
+      - Patients are accumulated into batches targeting `batch_size` scans.
+      - If an individual patient has more scans than batch_size, their scans are divided into
+        sub-batches of at most `batch_size`.
+      - Cross-patient isolation is strictly preserved: different patients within the batch
+        remain disconnected in the graph (0 cross-patient edges).
+    """
+
+    def __init__(
+        self,
+        index_df: pd.DataFrame,
+        batch_size: int = 32,
+        shuffle: bool = True,
+        seed: int = 42,
+        drop_last: bool = False,
+    ) -> None:
+        super().__init__()
+        self.batch_size = max(1, batch_size)
+        self.shuffle = shuffle
+        self.seed = seed
+        self.drop_last = drop_last
+        self.epoch = 0
+
+        # Group dataset row indices [0 .. len(df)-1] by patient_id
+        clean_df = index_df.reset_index(drop=True)
+        groups = clean_df.groupby("patient_id").indices
+        self.patient_groups: list[list[int]] = [list(indices) for indices in groups.values()]
+
+    def __iter__(self):
+        import numpy as np
+        rng = np.random.RandomState(self.seed + self.epoch)
+        order = list(range(len(self.patient_groups)))
+        if self.shuffle:
+            rng.shuffle(order)
+
+        current_batch: list[int] = []
+        for g_idx in order:
+            scans = self.patient_groups[g_idx]
+
+            # If this patient alone exceeds batch_size, yield in chunks
+            if len(scans) >= self.batch_size:
+                if len(current_batch) > 0:
+                    yield current_batch
+                    current_batch = []
+                for i in range(0, len(scans), self.batch_size):
+                    chunk = scans[i : i + self.batch_size]
+                    yield chunk
+                continue
+
+            # If adding this patient exceeds batch_size, flush current_batch first
+            if len(current_batch) + len(scans) > self.batch_size:
+                if len(current_batch) > 0:
+                    yield current_batch
+                    current_batch = []
+
+            current_batch.extend(scans)
+
+        if len(current_batch) > 0:
+            yield current_batch
+
+    def set_epoch(self, epoch: int) -> None:
+        self.epoch = epoch
+
+    def __len__(self) -> int:
+        total_scans = sum(len(g) for g in self.patient_groups)
+        return total_scans // self.batch_size if self.drop_last else (total_scans + self.batch_size - 1) // self.batch_size
+
+
 # ── DataLoader Factory ────────────────────────────────────────────────────────
 
 def get_dataloader(
@@ -116,6 +195,7 @@ def get_dataloader(
     return_meta: bool = True,
     pin_memory: bool = False,
     persistent_workers: bool = False,
+    patient_grouping: bool = True,
 ) -> DataLoader:
     """Build a DataLoader for the given split.
 
@@ -129,6 +209,8 @@ def get_dataloader(
         return_meta:   Include patient_id / scan_id in batch dict.
         pin_memory:    Pin memory for GPU transfer (only useful with GPU).
         persistent_workers: Keep workers alive between epochs.
+        patient_grouping: If True and patient_id is present, group companion scans
+                          of each patient together using PatientGroupedBatchSampler.
 
     Returns:
         Configured DataLoader.
@@ -146,20 +228,36 @@ def get_dataloader(
 
     shuffle = split == "train"
 
-    loader = DataLoader(
-        dataset,
-        batch_size=batch_size,
-        shuffle=shuffle,
-        num_workers=num_workers,
-        pin_memory=pin_memory,
-        persistent_workers=(persistent_workers and num_workers > 0),
-        drop_last=(shuffle),   # drop last incomplete batch in training
-        collate_fn=_collate_fn,
-    )
+    if patient_grouping and "patient_id" in index_df.columns:
+        batch_sampler = PatientGroupedBatchSampler(
+            index_df=index_df,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            drop_last=shuffle,
+        )
+        loader = DataLoader(
+            dataset,
+            batch_sampler=batch_sampler,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(persistent_workers and num_workers > 0),
+            collate_fn=_collate_fn,
+        )
+    else:
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            shuffle=shuffle,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            persistent_workers=(persistent_workers and num_workers > 0),
+            drop_last=shuffle,   # drop last incomplete batch in training
+            collate_fn=_collate_fn,
+        )
 
     logger.info(
-        "DataLoader[%s]: %d samples, batch_size=%d, num_workers=%d",
-        split, len(dataset), batch_size, num_workers
+        "DataLoader[%s]: %d samples, batch_size=%d, num_workers=%d, patient_grouping=%s",
+        split, len(dataset), batch_size, num_workers, (patient_grouping and "patient_id" in index_df.columns)
     )
     return loader
 

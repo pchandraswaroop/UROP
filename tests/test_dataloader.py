@@ -174,3 +174,78 @@ class TestHFLoaderStreaming:
             mock_load.assert_called_once()
             _, kwargs = mock_load.call_args
             assert kwargs.get("streaming") is False
+
+
+class TestPatientGroupedBatchSampler:
+    def test_same_patient_scans_grouped_together_in_batch(self):
+        """Prove that companion scans of the same patient are kept in the same batch
+        and that build_batch_scan_graph creates intra-patient edges with zero cross-patient edges."""
+        import pandas as pd
+        from src.dataset.dataloader import get_dataloader, PatientGroupedBatchSampler
+        from src.graph.graph_builder import build_batch_scan_graph
+
+        # Synthetic multi-scan patient dataset:
+        # P001: 3 scans, P002: 2 scans, P003: 1 scan, P004: 4 scans (total 10 scans)
+        df = pd.DataFrame([
+            {"hf_index": 0, "patient_id": "P001", "scan_id": 0, "age": 45, "sex": "M", "labels_raw": [1]},
+            {"hf_index": 1, "patient_id": "P001", "scan_id": 1, "age": 45, "sex": "M", "labels_raw": [1]},
+            {"hf_index": 2, "patient_id": "P001", "scan_id": 2, "age": 45, "sex": "M", "labels_raw": [1]},
+            {"hf_index": 3, "patient_id": "P002", "scan_id": 0, "age": 52, "sex": "F", "labels_raw": [2]},
+            {"hf_index": 4, "patient_id": "P002", "scan_id": 1, "age": 52, "sex": "F", "labels_raw": [2]},
+            {"hf_index": 5, "patient_id": "P003", "scan_id": 0, "age": 60, "sex": "M", "labels_raw": [0]},
+            {"hf_index": 6, "patient_id": "P004", "scan_id": 0, "age": 38, "sex": "F", "labels_raw": [3]},
+            {"hf_index": 7, "patient_id": "P004", "scan_id": 1, "age": 38, "sex": "F", "labels_raw": [3]},
+            {"hf_index": 8, "patient_id": "P004", "scan_id": 2, "age": 38, "sex": "F", "labels_raw": [3]},
+            {"hf_index": 9, "patient_id": "P004", "scan_id": 3, "age": 38, "sex": "F", "labels_raw": [3]},
+        ])
+
+        hf = make_fake_hf_dataset(10)
+        loader = get_dataloader(
+            split="train",
+            index_df=df,
+            hf_dataset=hf,
+            batch_size=5,
+            patient_grouping=True,
+        )
+
+        total_sampled = 0
+        for batch in loader:
+            pids = batch["patient_id"]
+            total_sampled += len(pids)
+
+            # Verify that any patient appearing in this batch has ALL their scans present in this batch
+            # (unless patient scans exceed batch_size)
+            for p in set(pids):
+                total_in_df = (df["patient_id"] == p).sum()
+                in_batch = pids.count(p)
+                assert in_batch == min(total_in_df, 5), (
+                    f"Patient {p} companion scans were split across batches! "
+                    f"Expected {min(total_in_df, 5)} in batch, found {in_batch}"
+                )
+
+            # Build the batch scan graph using the real training graph construction
+            meta = batch["meta"]
+            _, edge_index = build_batch_scan_graph(meta, pids, add_self_loops=True)
+
+            # Verify zero cross-patient edges
+            for e in range(edge_index.shape[1]):
+                src, dst = edge_index[0, e].item(), edge_index[1, e].item()
+                assert pids[src] == pids[dst], (
+                    f"Cross-patient edge detected: {pids[src]} -> {pids[dst]}"
+                )
+
+            # Verify intra-patient connectivity:
+            # For each patient p with k scans in the batch, expected directed edges = k^2
+            for p in set(pids):
+                k = pids.count(p)
+                # Count edges where both endpoints belong to p
+                p_edges = sum(
+                    1 for e in range(edge_index.shape[1])
+                    if pids[edge_index[0, e].item()] == p and pids[edge_index[1, e].item()] == p
+                )
+                assert p_edges == k * k, (
+                    f"Patient {p} with {k} scans should have {k*k} edges (complete subgraph + self-loops), got {p_edges}"
+                )
+
+        assert total_sampled == len(df), f"Expected {len(df)} total scans sampled, got {total_sampled}"
+

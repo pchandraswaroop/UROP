@@ -231,6 +231,17 @@ class Experiment:
         return self.val_metrics
 
     # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def best_checkpoint_path(self) -> Optional[str]:
+        """Return the path to the best model checkpoint from training."""
+        if self.trainer:
+            return self.trainer.best_checkpoint_path
+        return None
+
+    # ------------------------------------------------------------------
     # evaluate_test
     # ------------------------------------------------------------------
 
