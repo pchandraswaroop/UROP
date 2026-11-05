@@ -168,9 +168,17 @@ else:
         except Exception as e:
             print(f"Note on git synchronization: {e}")
     else:
-        print(f"Directory {REPO_PATH} exists but is not a git repository. Re-cloning...")
-        shutil.rmtree(REPO_PATH)
-        subprocess.check_call(["git", "clone", REPO_URL, REPO_PATH])
+        # Check if project files exist already to avoid destructive deletion
+        has_cfg = os.path.exists(os.path.join(REPO_PATH, "config/config.yaml"))
+        has_src = os.path.exists(os.path.join(REPO_PATH, "src"))
+        if has_cfg and has_src:
+            print(f"ℹ Notice: {REPO_PATH} exists without Git metadata. Preserving all existing files (no automatic deletion).")
+        else:
+            raise RuntimeError(
+                f"Directory '{REPO_PATH}' exists but is not a Git repository and does not contain project source.\\n"
+                f"To protect your data, it was NOT automatically deleted.\\n"
+                f"Action required: Please rename or remove '{REPO_PATH}', or specify a clean target directory."
+            )
 
 # Change to repository root
 os.chdir(REPO_PATH)
@@ -899,29 +907,73 @@ for m_name, var_name in candidate_models:
 
 print(f"Active experiments in current session: {list(active_experiments.keys())}\\n")
 
-# For each active experiment, evaluate FRESH on test_loader using the best restored weights
+# Evaluate FRESH on test_loader for active experiments or verified checkpoints
 freshly_evaluated = []
-for m_name, exp_inst in active_experiments.items():
-    ckpt_path = exp_inst.best_checkpoint_path or "In-memory restored best weights"
-    print(f"Evaluating active experiment '{m_name}' on held-out test split...")
-    print(f" - Evaluated Checkpoint:   {ckpt_path}")
-    print(f" - Best Validation Epoch:  {exp_inst.best_epoch + 1}")
+evaluated_metadata = {}
+
+for m_name, var_name in candidate_models:
+    exp_inst = active_experiments.get(m_name)
     
-    test_metrics = exp_inst.evaluate_test()
-    exp_inst.save_results("results")
-    freshly_evaluated.append(m_name)
-    
-    print(f" - Fresh Test Mean AUROC:  {test_metrics.get('auc_mean', float('nan')):.4f}")
-    print(f" - Fresh Test Macro F1:    {test_metrics.get('f1_macro', float('nan')):.4f}\\n")
+    if exp_inst is not None:
+        # Active in-memory experiment from this session
+        ckpt_path = exp_inst.best_checkpoint_path or "In-memory restored best weights"
+        print(f"Evaluating active experiment '{m_name}' on held-out test split...")
+        print(f" - Verified Checkpoint:    {ckpt_path}")
+        print(f" - Best Validation Epoch:  {exp_inst.best_epoch + 1}")
+        
+        test_metrics = exp_inst.evaluate_test()
+        exp_inst.save_results("results")
+        freshly_evaluated.append(m_name)
+        evaluated_metadata[m_name] = {
+            "checkpoint": Path(ckpt_path).name if ckpt_path != "In-memory restored best weights" else "in-memory-best",
+            "best_epoch": f"Epoch {exp_inst.best_epoch + 1}",
+        }
+        print(f" - Fresh Test Mean AUROC:  {test_metrics.get('auc_mean', float('nan')):.4f}")
+        print(f" - Fresh Test Macro F1:    {test_metrics.get('f1_macro', float('nan')):.4f}\\n")
+        
+    else:
+        # Check if an authentic, verifiable checkpoint file exists on disk
+        ckpt_dir = Path("checkpoints") / m_name
+        available_ckpts = list(ckpt_dir.glob("checkpoint_epoch*.pt")) if ckpt_dir.exists() else []
+        
+        if available_ckpts:
+            ranked = []
+            for p in available_ckpts:
+                try:
+                    payload = torch.load(p, map_location="cpu", weights_only=False)
+                    v_score = payload.get("metrics", {}).get("val_auc_mean", -1.0)
+                    ep = payload.get("epoch", -1)
+                    ranked.append((v_score, ep, p))
+                except Exception:
+                    pass
+            
+            if ranked:
+                ranked.sort(key=lambda x: x[0], reverse=True)
+                best_score, best_ep, best_p = ranked[0]
+                print(f"Found verified checkpoint for '{m_name}': {best_p.name} (Val AUC: {best_score:.4f})")
+                print(f"Running fresh held-out test evaluation from verified checkpoint...")
+                
+                from src.training.trainer import CheckpointManager
+                from src.training.experiment import Experiment
+                exp_disk = Experiment(name=m_name, cfg=BASE_CFG.copy(), device=device)
+                exp_disk.setup(train_df, val_df, test_df, hf_dataset)
+                CheckpointManager.load(str(best_p), exp_disk.model, device=device)
+                
+                test_metrics = exp_disk.evaluate_test()
+                exp_disk.save_results("results")
+                freshly_evaluated.append(m_name)
+                evaluated_metadata[m_name] = {
+                    "checkpoint": best_p.name,
+                    "best_epoch": f"Epoch {best_ep + 1 if isinstance(best_ep, int) else best_ep}",
+                }
+                print(f" - Fresh Test Mean AUROC:  {test_metrics.get('auc_mean', float('nan')):.4f}")
+                print(f" - Fresh Test Macro F1:    {test_metrics.get('f1_macro', float('nan')):.4f}\\n")
+            else:
+                print(f"ℹ Skipping '{m_name}': Checkpoint files could not be verified. Old test metrics excluded.\\n")
+        else:
+            print(f"ℹ Skipping '{m_name}': No active experiment or verified checkpoint found. Old unverified results excluded.\\n")
 
 models_to_compare = freshly_evaluated
-if not models_to_compare:
-    # If no active in-memory experiments, look for completed runs on disk with valid metrics
-    for m_name, _ in candidate_models:
-        if (Path("results") / m_name / "test_metrics.json").exists():
-            models_to_compare.append(m_name)
-    print(f"Notice: Using completed disk checkpoints for: {models_to_compare}")
-
 assert len(models_to_compare) > 0, "No trained models found to evaluate! Run Cell 8 training first."
 
 out_dir = Path("outputs/model_comparison")
@@ -933,13 +985,10 @@ df_comparison = load_experiment_metrics(results_dir="results", models=models_to_
 # Annotate each model with its specific evaluated checkpoint and best epoch
 ckpt_annotations = []
 for m_name in df_comparison["model"]:
-    exp_inst = active_experiments.get(m_name)
-    if exp_inst is not None and exp_inst.best_checkpoint_path:
-        ckpt_annotations.append({"model": m_name, "checkpoint": Path(exp_inst.best_checkpoint_path).name, "best_epoch": f"Epoch {exp_inst.best_epoch + 1}"})
-    else:
-        ckpts = list((Path("checkpoints") / m_name).glob("checkpoint_epoch*.pt")) if (Path("checkpoints") / m_name).exists() else []
-        ckpt_name = ckpts[0].name if ckpts else "in-memory"
-        ckpt_annotations.append({"model": m_name, "checkpoint": ckpt_name, "best_epoch": "Verified"})
+    meta = evaluated_metadata.get(m_name, {})
+    ckpt_name = meta.get("checkpoint", "verified-checkpoint")
+    epoch_str = meta.get("best_epoch", "N/A")
+    ckpt_annotations.append({"model": m_name, "checkpoint": ckpt_name, "best_epoch": epoch_str})
 
 df_annot = pd.DataFrame(ckpt_annotations)
 df_comparison = pd.merge(df_comparison, df_annot, on="model", how="left")
