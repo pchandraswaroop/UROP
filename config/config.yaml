@@ -1,0 +1,284 @@
+# =============================================================================
+# Explainable Multimodal Quantum-GNN Framework for Chest X-ray Diagnosis
+# Central Configuration File
+# =============================================================================
+
+# ── Project ───────────────────────────────────────────────────────────────────
+project:
+  name: "quantum_gnn_cxr"
+  version: "0.1.0"
+  seed: 42
+
+# ── Dataset ───────────────────────────────────────────────────────────────────
+dataset:
+  hf_repo: "chehablab/NIHChestXR"
+  split: "train"                    # only split available
+  cache_dir: "data/raw"             # local HuggingFace cache
+  num_classes: 14                   # disease classes (excludes No Finding)
+
+  # Label index map (list[int32] in dataset)
+  # Index 0 = No Finding (not a disease target)
+  # Indices 1-14 = 14 disease classes
+  label_names:
+    - "Atelectasis"
+    - "Cardiomegaly"
+    - "Consolidation"
+    - "Effusion"
+    - "Emphysema"
+    - "Fibrosis"
+    - "Hernia"
+    - "Infiltration"
+    - "Mass"
+    - "Nodule"
+    - "Pleural Thickening"
+    - "Pneumonia"
+    - "Pneumothorax"
+    - "Edema"
+
+  # Original label index → our 0-indexed disease label
+  # HF labels list[int32] contains indices from NIH original
+  # We map: NIH idx 1-14 → our idx 0-13
+  no_finding_hf_index: 0
+
+# ── Splits ────────────────────────────────────────────────────────────────────
+splits:
+  train_ratio: 0.70
+  val_ratio:   0.15
+  test_ratio:  0.15
+  split_dir:   "data/splits"
+  # stratify by patient-level disease presence flags
+
+# ── Image Preprocessing ───────────────────────────────────────────────────────
+image:
+  size: 224                         # resize to 224x224 (model input)
+  source_size: 244                  # original HF size
+  mean: [0.485, 0.456, 0.406]       # ImageNet mean (pre-trained backbone compat)
+  std:  [0.229, 0.224, 0.225]       # ImageNet std
+  augmentation:
+    enabled: true
+    random_horizontal_flip: 0.5
+    random_rotation_degrees: 10
+    color_jitter:
+      brightness: 0.2
+      contrast: 0.2
+    random_erasing: 0.1
+
+# ── Model ─────────────────────────────────────────────────────────────────────
+model:
+  # Image branch
+  image_backbone: "efficientnet_b0"  # or "vit_small_patch16_224"
+  image_feature_dim: 1280
+  pretrained: true
+
+  # Quantum layer
+  quantum:
+    enabled: false                  # disable on CPU; enable on Colab
+    n_qubits: 4
+    n_layers: 2
+    output_dim: 16
+
+  # GNN branch
+  gnn:
+    enabled: true
+    node_feature_dim: 16            # age(1) + sex(1) + disease_hist(14)
+    hidden_dim: 64
+    num_layers: 2
+    dropout: 0.3
+    edge_threshold: 0.3             # min Jaccard similarity for edge
+
+  # Fusion
+  fusion:
+    strategy: "disease_specific"    # concatenation per disease head
+    dropout: 0.3
+
+  # Classifier
+  classifier:
+    hidden_dim: 256
+    dropout: 0.3
+
+# ── Training ──────────────────────────────────────────────────────────────────
+training:
+  # Local CPU settings
+  batch_size: 4
+  num_workers: 0
+  max_epochs: 50
+  learning_rate: 1.0e-4
+  weight_decay: 1.0e-5
+  amp: false                        # automatic mixed precision (GPU only)
+
+  # Colab GPU overrides (applied when device=cuda)
+  colab_overrides:
+    batch_size: 32
+    num_workers: 4
+    amp: true
+
+  # Scheduler
+  scheduler: "cosine_annealing"
+  warmup_epochs: 3
+
+  # Class imbalance handling
+  use_weighted_loss: true
+  pos_weight_cap: 10.0              # max positive class weight
+
+  # Checkpointing
+  checkpoint_dir: "checkpoints"
+  resume: false
+  save_top_k: 3
+  monitor_metric: "val_auc_mean"
+  monitor_mode: "max"
+
+# ── Evaluation ────────────────────────────────────────────────────────────────
+evaluation:
+  metrics:
+    - "roc_auc"
+    - "average_precision"
+    - "f1_macro"
+    - "f1_micro"
+    - "precision"
+    - "recall"
+  threshold: 0.5                    # classification threshold
+
+# ── Explainability ────────────────────────────────────────────────────────────
+explainability:
+  gradcam:
+    enabled: true
+    target_layer: "features.8"      # EfficientNet last conv block
+  shap:
+    enabled: true
+    background_samples: 100
+  modality_attribution:
+    enabled: true
+
+# ── Logging ───────────────────────────────────────────────────────────────────
+logging:
+  level: "INFO"
+  log_dir: "logs"
+  use_wandb: false
+  wandb_project: "quantum-gnn-cxr"
+
+# ── Data Stats ────────────────────────────────────────────────────────────────
+stats:
+  output_dir: "data/stats"
+  figures_dpi: 150
+
+# ── Paths ─────────────────────────────────────────────────────────────────────
+paths:
+  data: "data"
+  models: "models_saved"
+  logs: "logs"
+  checkpoints: "checkpoints"
+  reports: "data/stats"
+
+# ── Experiments ───────────────────────────────────────────────────────────────
+# Each entry maps an experiment name to config overrides merged with the
+# defaults above.  Keys follow the same naming convention as the factory.
+experiments:
+  cnn_only:
+    description: "EfficientNet-B0 image features only (no quantum, MLP clinical)"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 8
+
+  vit_only:
+    description: "ViT-Small image features only (no quantum, MLP clinical)"
+    image_backbone: "vit_small_patch16_224"
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 8
+
+  quantum_cnn:
+    description: "EfficientNet-B0 + QuantumLayer + Disease-Specific Fusion/Classifier"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false     # set true on GPU/Colab
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "disease_specific"
+    classifier_type: "disease_specific"
+    max_epochs: 50
+    batch_size: 8
+
+  mlp_clinical_only:
+    description: "Clinical metadata (age/sex) only — lower bound baseline"
+    image_backbone: null
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    zero_image_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 16
+
+  gnn_only:
+    description: "Graph Neural Network on patient graph — no image features"
+    image_backbone: null
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    zero_image_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 8
+
+  classical_multimodal:
+    description: "EfficientNet-B0 + MetadataEmbedder + SimpleConcatFusion (no quantum)"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 8
+
+  quantum_gnn_multimodal:
+    description: "Full model: EfficientNet + QuantumLayer + GNN/MLP + DiseaseSpecificFusion"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false     # set true on GPU/Colab
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "disease_specific"
+    classifier_type: "disease_specific"
+    max_epochs: 50
+    batch_size: 8
+
+  disease_specific_fusion:
+    description: "Alias for quantum_gnn_multimodal"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "disease_specific"
+    classifier_type: "disease_specific"
+    max_epochs: 50
+    batch_size: 8
+
+  shared_fusion:
+    description: "EfficientNet + QuantumLayer + MetadataEmbedder + SimpleConcatFusion"
+    image_backbone: "efficientnet_b0"
+    quantum_enabled: false
+    quantum_output_dim: 64
+    clinical_output_dim: 64
+    fused_dim: 128
+    fusion_type: "simple_concat"
+    classifier_type: "shared"
+    max_epochs: 50
+    batch_size: 8

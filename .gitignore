@@ -1,0 +1,45 @@
+# Dataset
+data/
+*.parquet
+
+# Python environment
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Model weights and checkpoints
+*.pth
+*.pt
+*.ckpt
+*.onnx
+checkpoints/
+weights/
+
+# Generated outputs and logs
+outputs/
+logs/
+runs/
+wandb/
+mlruns/
+*.log
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Secrets
+.env
+.env.*
+
+# IDE and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Test output files
+all_test_output.txt
+audit_output.txt
+test_output.txt

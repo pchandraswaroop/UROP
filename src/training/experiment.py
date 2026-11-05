@@ -1,0 +1,281 @@
+"""
+experiment.py — Clean Experiment Runner
+========================================
+Encapsulates the full lifecycle of a single training experiment:
+  setup → run → evaluate_test → save_results
+
+Usage
+-----
+    exp = Experiment("cnn_only", cfg, device="cpu")
+    exp.setup(train_df, val_df, test_df, hf_dataset)
+    metrics = exp.run(max_epochs=50)
+    test_metrics = exp.evaluate_test()
+    exp.save_results("results/")
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import torch
+import torch.nn as nn
+from torch.optim import AdamW
+from torch.optim.lr_scheduler import CosineAnnealingLR
+from torch.utils.data import DataLoader
+
+from src.models.model_factory import build_model
+from src.training.losses import WeightedBCELoss, compute_pos_weights
+from src.training.trainer import CheckpointManager, EarlyStopping, Trainer
+
+logger = logging.getLogger(__name__)
+
+
+class Experiment:
+    """Manages the full lifecycle of one experiment variant.
+
+    Args:
+        name:   Experiment name (must match a key in model_factory).
+        cfg:    Config dict (merged from config.yaml + CLI overrides).
+        device: "cpu" or "cuda".
+    """
+
+    def __init__(self, name: str, cfg: Dict[str, Any], device: str = "cpu") -> None:
+        self.name   = name
+        self.cfg    = cfg
+        self.device = device
+
+        self.model: Optional[nn.Module] = None
+        self.trainer: Optional[Trainer] = None
+        self.train_loader: Optional[DataLoader] = None
+        self.val_loader:   Optional[DataLoader] = None
+        self.test_loader:  Optional[DataLoader] = None
+
+        self.train_history: list = []
+        self.val_metrics:   Dict[str, float] = {}
+        self.test_metrics:  Dict[str, float] = {}
+        self.start_time: Optional[float] = None
+
+    # ------------------------------------------------------------------
+    # setup
+    # ------------------------------------------------------------------
+
+    def setup(
+        self,
+        train_df,
+        val_df,
+        test_df,
+        hf_dataset,
+    ) -> None:
+        """Build model, dataloaders, optimizer, scheduler, and trainer.
+
+        Args:
+            train_df:   Training split DataFrame (with hf_index, metadata columns).
+            val_df:     Validation split DataFrame.
+            test_df:    Test split DataFrame.
+            hf_dataset: HuggingFace Dataset (full, used for image lookup).
+        """
+        from src.dataset.dataloader import get_dataloader
+
+        logger.info("Setting up experiment '%s' on device=%s", self.name, self.device)
+
+        # ── DataLoaders ──────────────────────────────────────────────
+        batch_size  = self.cfg.get("batch_size", 4)
+        num_workers = self.cfg.get("num_workers", 0)
+        image_size  = self.cfg.get("image_size", 224)
+        pin_memory  = self.device == "cuda"
+
+        self.train_loader = get_dataloader(
+            split="train", index_df=train_df, hf_dataset=hf_dataset,
+            batch_size=batch_size, num_workers=num_workers,
+            image_size=image_size, pin_memory=pin_memory,
+        )
+        self.val_loader = get_dataloader(
+            split="val",   index_df=val_df,   hf_dataset=hf_dataset,
+            batch_size=batch_size, num_workers=num_workers,
+            image_size=image_size, pin_memory=pin_memory,
+        )
+        self.test_loader = get_dataloader(
+            split="test",  index_df=test_df,  hf_dataset=hf_dataset,
+            batch_size=batch_size, num_workers=num_workers,
+            image_size=image_size, pin_memory=pin_memory,
+        )
+
+        # ── Model ────────────────────────────────────────────────────
+        pretrained = self.cfg.get("pretrained", False)
+        self.model = build_model(
+            experiment=self.name,
+            cfg=self.cfg,
+            pretrained=pretrained,
+            device=self.device,
+        )
+        self.model = self.model.to(self.device)
+
+        # ── Loss ─────────────────────────────────────────────────────
+        if self.cfg.get("use_weighted_loss", True):
+            pos_weights = compute_pos_weights(
+                train_df,
+                num_classes=self.cfg.get("num_classes", 14),
+                cap=self.cfg.get("pos_weight_cap", 10.0),
+            ).to(self.device)
+        else:
+            pos_weights = None
+        criterion = WeightedBCELoss(pos_weights=pos_weights)
+
+        # ── Optimizer & Scheduler ────────────────────────────────────
+        lr           = self.cfg.get("learning_rate", 1e-4)
+        weight_decay = self.cfg.get("weight_decay", 1e-5)
+        max_epochs   = self.cfg.get("max_epochs", 50)
+
+        optimizer = AdamW(self.model.parameters(), lr=lr, weight_decay=weight_decay)
+        scheduler = CosineAnnealingLR(optimizer, T_max=max_epochs, eta_min=lr * 0.01)
+
+        # ── Early Stopping ───────────────────────────────────────────
+        early_stopping = EarlyStopping(
+            patience=self.cfg.get("early_stopping_patience", 10),
+            min_delta=self.cfg.get("early_stopping_min_delta", 1e-4),
+            mode="max",
+            restore_best_weights=True,
+        )
+
+        # ── Checkpoint Manager ───────────────────────────────────────
+        ckpt_dir = Path(self.cfg.get("checkpoint_dir", "checkpoints")) / self.name
+        ckpt_mgr = CheckpointManager(
+            checkpoint_dir=str(ckpt_dir),
+            save_top_k=self.cfg.get("save_top_k", 3),
+            monitor=self.cfg.get("monitor_metric", "val_auc_mean"),
+            mode=self.cfg.get("monitor_mode", "max"),
+        )
+
+        # ── CSV Logger path ──────────────────────────────────────────
+        log_dir  = Path(self.cfg.get("log_dir", "logs")) / self.name
+        csv_path = str(log_dir / "metrics.csv")
+
+        # ── Trainer ──────────────────────────────────────────────────
+        self.trainer = Trainer(
+            model=self.model,
+            criterion=criterion,
+            optimizer=optimizer,
+            scheduler=scheduler,
+            device=self.device,
+            use_amp=self.cfg.get("amp", False),
+            ckpt_mgr=ckpt_mgr,
+            csv_path=csv_path,
+            early_stopping=early_stopping,
+        )
+
+        logger.info(
+            "Experiment '%s' ready: %d train / %d val / %d test samples",
+            self.name,
+            len(self.train_loader.dataset),
+            len(self.val_loader.dataset),
+            len(self.test_loader.dataset),
+        )
+
+    # ------------------------------------------------------------------
+    # run
+    # ------------------------------------------------------------------
+
+    def run(
+        self,
+        max_epochs: int,
+        smoke_test: bool = False,
+    ) -> Dict[str, float]:
+        """Train the model.
+
+        Args:
+            max_epochs: Maximum epochs (overrides cfg if provided).
+            smoke_test: If True, run only 2 epochs regardless of max_epochs.
+
+        Returns:
+            Final validation metrics dict.
+        """
+        if self.trainer is None:
+            raise RuntimeError("Call setup() before run().")
+
+        actual_epochs = 2 if smoke_test else max_epochs
+        self.start_time = time.time()
+
+        logger.info(
+            "Running experiment '%s' for %d epochs (smoke_test=%s)",
+            self.name, actual_epochs, smoke_test,
+        )
+
+        self.train_history = self.trainer.fit(
+            train_loader=self.train_loader,
+            val_loader=self.val_loader,
+            max_epochs=actual_epochs,
+        )
+
+        elapsed = time.time() - self.start_time
+        logger.info("Experiment '%s' finished in %.1fs", self.name, elapsed)
+
+        # Extract final val metrics from last history entry
+        if self.train_history:
+            last = self.train_history[-1]
+            self.val_metrics = {
+                k.replace("val_", ""): v
+                for k, v in last.items()
+                if k.startswith("val_")
+            }
+        return self.val_metrics
+
+    # ------------------------------------------------------------------
+    # evaluate_test
+    # ------------------------------------------------------------------
+
+    def evaluate_test(self) -> Dict[str, float]:
+        """Evaluate the trained model on the test split.
+
+        Returns:
+            Test metrics dict.
+        """
+        if self.trainer is None or self.test_loader is None:
+            raise RuntimeError("Call setup() and run() before evaluate_test().")
+
+        logger.info("Evaluating experiment '%s' on test split …", self.name)
+        self.test_metrics = self.trainer.eval_epoch(self.test_loader, split="test")
+        logger.info(
+            "Test | auc_mean=%.4f | f1_macro=%.4f",
+            self.test_metrics.get("auc_mean", float("nan")),
+            self.test_metrics.get("f1_macro", float("nan")),
+        )
+        return self.test_metrics
+
+    # ------------------------------------------------------------------
+    # save_results
+    # ------------------------------------------------------------------
+
+    def save_results(self, output_dir: str) -> None:
+        """Save metrics CSV and config JSON to output_dir/experiment_name/.
+
+        Args:
+            output_dir: Root directory to write results into.
+        """
+        out = Path(output_dir) / self.name
+        out.mkdir(parents=True, exist_ok=True)
+
+        # Config snapshot
+        cfg_path = out / "config.json"
+        with open(cfg_path, "w") as f:
+            json.dump({"experiment": self.name, **self.cfg}, f, indent=2, default=str)
+
+        # Val metrics
+        val_path = out / "val_metrics.json"
+        with open(val_path, "w") as f:
+            json.dump(self.val_metrics, f, indent=2, default=str)
+
+        # Test metrics
+        test_path = out / "test_metrics.json"
+        with open(test_path, "w") as f:
+            json.dump(self.test_metrics, f, indent=2, default=str)
+
+        # Training history
+        history_path = out / "train_history.json"
+        with open(history_path, "w") as f:
+            json.dump(self.train_history, f, indent=2, default=str)
+
+        logger.info("Results saved to %s", out)
