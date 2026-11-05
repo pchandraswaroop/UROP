@@ -45,6 +45,7 @@ NIH_LABEL_NAMES: List[str] = [
 
 # The 14 disease classes we predict (NIH index → our 0-based index)
 DISEASE_LABEL_NAMES: List[str] = NIH_LABEL_NAMES[1:]  # indices 1..14
+DISEASE_NAMES: List[str] = DISEASE_LABEL_NAMES        # alias for convenience
 NUM_CLASSES: int = len(DISEASE_LABEL_NAMES)  # 14
 
 NO_FINDING_IDX: int = 0  # NIH index for "No Finding"
