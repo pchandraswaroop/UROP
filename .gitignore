@@ -22,8 +22,8 @@ all_test_output.txt
 audit_output.txt
 test_output.txt
 
-# --- Datasets & Raw Cache (Keep repository lightweight & under 100MB) ---
-data/
+# --- Datasets & Raw Cache (Keep splits tracked, ignore raw downloads) ---
+data/raw/
 *.arrow
 *.parquet
 *.csv.gz
