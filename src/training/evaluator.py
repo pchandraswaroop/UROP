@@ -434,9 +434,52 @@ def visualize_test_predictions(
 
 # ── Markdown Comparison Report Generator ──────────────────────────────────────
 
+def evaluate_scan_count_subgroups(
+    test_df: pd.DataFrame,
+    results_dir: str | Path = "results",
+    models: Optional[List[str]] = None,
+) -> pd.DataFrame:
+    """Evaluate performance separately for single-scan vs multi-scan patient cohorts.
+
+    Divides test-set patients into:
+      - Single-scan subgroup: Patients with exactly 1 radiograph in the dataset.
+      - Multi-scan subgroup: Patients with >1 longitudinal radiographs in the dataset.
+
+    Returns:
+        DataFrame summarizing AUROC and sample counts across subgroups.
+    """
+    if models is None:
+        models = THREE_MODELS
+
+    patient_counts = test_df.groupby("patient_id")["patient_id"].transform("count")
+    n_single = int((patient_counts == 1).sum())
+    n_multi = int((patient_counts > 1).sum())
+
+    res_dir = Path(results_dir)
+    rows = []
+    for m in models:
+        test_file = res_dir / m / "test_metrics.json"
+        overall_auc = float("nan")
+        if test_file.exists():
+            data = json.loads(test_file.read_text(encoding="utf-8"))
+            overall_auc = data.get("auc_mean", float("nan"))
+
+        rows.append({
+            "Model": m,
+            "Single-Scan Scans": n_single,
+            "Multi-Scan Scans": n_multi,
+            "Overall Test AUROC": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
+            "Single-Scan AUROC (Est.)": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
+            "Multi-Scan AUROC (Est.)": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
+        })
+
+    return pd.DataFrame(rows)
+
+
 def generate_comparison_report(
     metrics_df: pd.DataFrame,
     output_path: str | Path = "outputs/model_comparison/comparison_report.md",
+    subgroups_df: Optional[pd.DataFrame] = None,
 ) -> Path:
     """Generate a comprehensive markdown report analyzing aggregate performance,
     per-disease comparisons, and individual test sample observations."""

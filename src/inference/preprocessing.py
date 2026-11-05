@@ -40,10 +40,20 @@ class InferencePreprocessor:
         age: Union[int, float, str],
         sex: str,
     ) -> None:
-        """Validate input parameters. Raises InputValidationError on violation."""
+        """Validate input parameters. Accepts single image or list of images."""
         # 1. Image validation
         if image is None:
             raise InputValidationError("No image provided. Please upload a chest X-ray.")
+
+        if isinstance(image, (list, tuple)):
+            if len(image) == 0:
+                raise InputValidationError("No image provided. Image list is empty.")
+            for idx, img in enumerate(image):
+                if img is None:
+                    raise InputValidationError(f"Scan at index {idx} is None.")
+        else:
+            if isinstance(image, (bytes, bytearray)) and len(image) == 0:
+                raise InputValidationError("Uploaded image byte stream is empty.")
 
         # 2. Age validation
         try:
@@ -85,6 +95,29 @@ class InferencePreprocessor:
         img_tensor = self.val_transform(pil_img).unsqueeze(0)  # [1, 3, H, W]
         return img_tensor, raw_rgb
 
+    def preprocess_images(
+        self,
+        image_inputs: Union[Any, List[Any]],
+    ) -> Tuple[torch.Tensor, List[np.ndarray]]:
+        """Convert one or more image inputs into a batched tensor and display numpy arrays.
+
+        Returns:
+            stacked_tensors: [K, 3, image_size, image_size]
+            raw_rgbs: List of K [image_size, image_size, 3] uint8 arrays
+        """
+        if not isinstance(image_inputs, (list, tuple)):
+            image_inputs = [image_inputs]
+
+        tensors = []
+        raw_rgbs = []
+        for img in image_inputs:
+            t, rgb = self.preprocess_image(img)
+            tensors.append(t)
+            raw_rgbs.append(rgb)
+
+        stacked = torch.cat(tensors, dim=0)  # [K, 3, H, W]
+        return stacked, raw_rgbs
+
     def preprocess_metadata(self, age: Union[int, float], sex: str) -> torch.Tensor:
         """Encode clinical metadata into [1, 2] normalized tensor [age_norm, sex_binary]."""
         vec = self.meta_encoder.encode_row(int(age), str(sex))  # [2]
@@ -93,9 +126,6 @@ class InferencePreprocessor:
     @staticmethod
     def build_single_scan_graph(meta_tensor: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """Construct a valid single-node scan graph with a self-loop.
-
-        Note: A single scan represents an isolated visit; graph message passing
-        is trivial without prior patient scans.
 
         Returns:
             gx: [1, 2] node features
@@ -106,16 +136,31 @@ class InferencePreprocessor:
         return gx, edge_index
 
     @staticmethod
+    def build_multi_scan_patient_graph(
+        num_scans: int,
+        device: torch.device = torch.device("cpu"),
+    ) -> torch.Tensor:
+        """Construct a scan graph connecting all uploaded scans of the same patient.
+
+        Requirements:
+          - Connects scans belonging to the same patient (all-to-all).
+          - Never connects scans across different patients.
+          - Includes self-loops for each scan.
+
+        Returns:
+            edge_index: [2, num_scans * num_scans] long tensor
+        """
+        K = max(1, num_scans)
+        src = [i for i in range(K) for j in range(K)]
+        dst = [j for i in range(K) for j in range(K)]
+        return torch.tensor([src, dst], dtype=torch.long, device=device)
+
+    @staticmethod
     def build_patient_history_graph(
         meta_history: List[torch.Tensor],
         patient_id: str = "PATIENT_QUERY",
     ) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Construct a scan-to-scan graph for multiple scans belonging to the same patient.
-
-        Returns:
-            gx: [N, 2] node features
-            edge_index: [2, E] all-to-all directed edges with self loops
-        """
+        """Construct a scan-to-scan graph for multiple scans belonging to the same patient."""
         N = len(meta_history)
         stacked_meta = torch.cat(meta_history, dim=0)  # [N, 2]
         patient_ids = [patient_id] * N

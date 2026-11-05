@@ -294,3 +294,34 @@ class TestExplanationService:
         exp_res = ExplanationService.get_image_explanation(res, "Atelectasis")
         assert exp_res["status"] == "unavailable"
         assert "zeroed out" in exp_res["message"]
+
+    def test_multi_scan_inference(self, sample_pil_image):
+        """Test inference with multiple scans belonging to the same patient."""
+        service = CXRInferenceService(device="cpu")
+        images = [sample_pil_image, sample_pil_image, sample_pil_image]  # 3 scans
+        res = service.predict(
+            image_input=images,
+            age=62,
+            sex="F",
+            experiment_name="quantum_gnn_multimodal",
+            mode=InferenceMode.DEMO,
+            threshold=0.4,
+            primary_scan_index=1,
+        )
+        assert res.is_multi_scan is True
+        assert res.node_count == 3
+        assert res.edge_count == 9  # 3x3 all-to-all directed edges including self loops
+        assert res.primary_scan_index == 1
+        assert len(res.probabilities) == 14
+        assert len(res.all_probabilities) == 3
+        assert len(res.all_raw_rgbs) == 3
+
+    def test_multi_scan_patient_graph_builder(self):
+        """Test patient graph construction creates isolated patient graphs with self loops."""
+        prep = InferencePreprocessor()
+        edge_index = prep.build_multi_scan_patient_graph(num_scans=4)
+        assert edge_index.shape == (2, 16)
+        # Check that self loops exist for each node
+        for i in range(4):
+            has_self_loop = any(edge_index[0, k] == i and edge_index[1, k] == i for k in range(16))
+            assert has_self_loop

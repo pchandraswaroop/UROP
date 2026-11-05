@@ -300,23 +300,31 @@ def build_model(
         img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
         q    = get_quantum_layer(input_dim=img.feature_dim, output_dim=q_out,
                                  enabled=quantum_enabled)
-        # Always create MetadataEmbedder as fallback for when no graph is provided
-        clin_fallback = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
+        # Clinical MLP processes patient demographic metadata
+        clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
+
+        # GNN Branch operates on scan graph where nodes combine image representation + metadata
+        gnn_node_dim = q_out + 2
         try:
-            from src.models.gnn_branch import GNNBranch
-            clin = GNNBranch(node_feat_dim=2, hidden_dim=64, output_dim=clin_out,
-                             n_layers=2, dropout=dropout)
+            from src.models.gnn_branch import GNNBranch, TG_AVAILABLE
+            if TG_AVAILABLE:
+                gnn = GNNBranch(node_feat_dim=gnn_node_dim, hidden_dim=64, output_dim=clin_out,
+                                n_layers=2, dropout=dropout)
+            else:
+                gnn = None
         except (ImportError, Exception):
-            clin = clin_fallback
-            clin_fallback = None
+            gnn = None
+
+        # Multimodal Disease-Specific Fusion: combines Quantum Image, Clinical MLP, and Scan Graph GNN
         fuse = DiseaseSpecificFusion(image_dim=q_out, clinical_dim=clin_out,
+                                     gnn_dim=clin_out if gnn is not None else None,
                                      fused_dim=fused_ds, num_classes=num_classes,
                                      dropout=dropout)
         cls  = DiseaseSpecificClassifier(fused_dim=fused_ds, hidden_dim=cls_hidden,
                                          num_classes=num_classes, dropout=dropout)
         return MultiModalCXRModel(img, clin, q, fuse, cls,
-                                  use_disease_specific_fusion=True,
-                                  clinical_fallback=clin_fallback)
+                                  gnn_branch=gnn,
+                                  use_disease_specific_fusion=True)
 
     # ------------------------------------------------------------------
     # shared_fusion

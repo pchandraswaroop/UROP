@@ -109,21 +109,27 @@ class SharedClassifier(nn.Module):
 class MultiModalCXRModel(nn.Module):
     """Full end-to-end model combining all branches.
 
-    This is the top-level model class used for training and inference.
+    Supports:
+      - 3-Branch Proposed Model (Quantum Image + Scan Graph GNN + Clinical MLP)
+      - 2-Branch Baseline Models (Image-Only, Classical Multimodal, Quantum-CNN)
 
-    When the clinical branch is a GNN, a ``clinical_fallback`` (typically a
-    MetadataEmbedder) is required for inference on patients who are NOT in
-    the training graph.  The GNN path is only used when ``graph_x`` and
-    ``graph_edge_index`` are explicitly provided.
+    In the 3-Branch Architecture (Quantum-GNN Multimodal):
+      1. Quantum Image Branch: EfficientNet-B0 + PennyLane 4-qubit VQC -> [B, 64]
+      2. Patient Scan Graph GNN: GraphSAGE operates over scan nodes containing
+         [img_feats, meta] (dimension 66) connected by patient-scan edges -> [B, 64]
+      3. Clinical MLP: Normalized Age and Sex processed through MetadataEmbedder -> [B, 64]
+      4. Disease-Specific Fusion: 14 per-disease 3-way softmax gating heads -> [B, 14, 128]
+      5. Final Classifier: 14 independent sigmoid multi-label classification heads -> [B, 14]
     """
 
     def __init__(
         self,
         image_branch: nn.Module,
-        clinical_branch: nn.Module,      # GNN or MLP
+        clinical_branch: nn.Module,      # Clinical MLP or MetadataEmbedder
         quantum_layer: nn.Module,        # QuantumLayer or Identity
-        fusion: nn.Module,
-        classifier: nn.Module,
+        fusion: nn.Module,               # DiseaseSpecificFusion or SimpleConcatFusion
+        classifier: nn.Module,           # DiseaseSpecificClassifier or SharedClassifier
+        gnn_branch: nn.Module | None = None,  # Dedicated GNN branch
         use_disease_specific_fusion: bool = True,
         clinical_fallback: nn.Module | None = None,
     ) -> None:
@@ -133,8 +139,8 @@ class MultiModalCXRModel(nn.Module):
         self.quantum_layer   = quantum_layer
         self.fusion          = fusion
         self.classifier      = classifier
+        self.gnn_branch      = gnn_branch
         self.use_ds_fusion   = use_disease_specific_fusion
-        # Fallback for when clinical_branch is a GNN but no graph is provided
         self.clinical_fallback = clinical_fallback
 
     def forward(
@@ -149,37 +155,57 @@ class MultiModalCXRModel(nn.Module):
         Args:
             images:           [B, 3, H, W]
             meta:             [B, 2]  (age_norm, sex_binary)
-            graph_x:          [N, node_feat] or None
-            graph_edge_index: [2, E] or None
+            graph_x:          Optional pre-computed node feature tensor
+            graph_edge_index: Optional [2, E] edge list connecting scans of the same patient
             return_logits:    If True, return raw logits (pre-sigmoid).
-                              Use during training to avoid logit → sigmoid → logit round-trip.
-                              If False (default), apply sigmoid and return probabilities.
 
         Returns:
             [B, 14] logits (if return_logits=True) or probabilities (if False)
         """
-        # 1. Image branch
-        img_feats    = self.image_branch(images)      # [B, image_dim]
-        img_feats    = self.quantum_layer(img_feats)  # [B, quantum_out]
+        B = images.shape[0]
 
-        # 2. Clinical branch
-        if graph_x is not None and graph_edge_index is not None:
-            # GNN path — real graph message passing if clinical branch accepts edge_index
+        # 1. Image branch (Visual extraction + Quantum enhancement)
+        img_feats = self.image_branch(images)          # [B, image_dim]
+        img_feats = self.quantum_layer(img_feats)      # [B, quantum_out]
+
+        # 2. Branch Processing
+        if self.gnn_branch is not None:
+            # 3-Branch Architecture:
+            # Clinical MLP processes demographic metadata
+            clin_feats = self.clinical_branch(meta)    # [B, clinical_out]
+
+            # GNN Branch: Node features incorporate meaningful scan visual features + demographics
+            if graph_x is not None and graph_x.shape[-1] == (img_feats.shape[-1] + meta.shape[-1]):
+                node_feats = graph_x
+            else:
+                node_feats = torch.cat([img_feats, meta], dim=-1)  # [B, q_out + 2]
+
+            # If no graph edges provided, default to self-loops (isolated scans)
+            if graph_edge_index is None:
+                graph_edge_index = torch.arange(B, device=images.device, dtype=torch.long).repeat(2, 1)
+
+            gnn_feats = self.gnn_branch(node_feats, graph_edge_index)  # [B, gnn_out]
+
+            # 3. Multimodal Fusion (Image + Clinical MLP + Scan Graph GNN)
+            fused = self.fusion(img_feats, clin_feats, gnn_features=gnn_feats)
+
+        elif graph_x is not None and graph_edge_index is not None:
+            # Legacy 2-branch with GNN as clinical branch
             try:
                 clin_feats = self.clinical_branch(graph_x, graph_edge_index)
             except TypeError:
                 clin_feats = self.clinical_branch(meta)
+            fused = self.fusion(img_feats, clin_feats)
+
         elif self.clinical_fallback is not None:
-            # GNN model but no graph data → use metadata-only fallback
             clin_feats = self.clinical_fallback(meta)
+            fused = self.fusion(img_feats, clin_feats)
+
         else:
-            # clinical_branch IS the MLP/MetadataEmbedder (non-GNN experiments)
             clin_feats = self.clinical_branch(meta)
+            fused = self.fusion(img_feats, clin_feats)
 
-        # 3. Fusion
-        fused = self.fusion(img_feats, clin_feats)
-
-        # 4. Classify
+        # 4. Final Classification (14 independent multi-label outputs)
         logits = self.classifier(fused)   # [B, 14]
 
         if return_logits:

@@ -566,3 +566,78 @@ class TestEarlyStopping:
         es(0.7, model)
         es(0.5, model)
         assert abs(es.best_score - 0.7) < 1e-6
+
+
+# =============================================================================
+# Final Quantum-GNN Multimodal Architecture Verification
+# =============================================================================
+
+class TestQuantumGNNMultimodalArchitecture:
+    """Verify complete 3-branch Quantum-GNN architecture."""
+
+    def test_branch_composition(self):
+        from src.models.model_factory import build_model
+        from src.models.image_branch import ImageBranch
+        from src.models.mlp_baseline import MetadataEmbedder
+        from src.models.fusion import DiseaseSpecificFusion
+        from src.models.classifier import DiseaseSpecificClassifier
+
+        model = build_model("quantum_gnn_multimodal", pretrained=False)
+        assert isinstance(model.image_branch, ImageBranch)
+        assert isinstance(model.clinical_branch, MetadataEmbedder)
+        assert isinstance(model.fusion, DiseaseSpecificFusion)
+        assert isinstance(model.classifier, DiseaseSpecificClassifier)
+        assert model.fusion.has_gnn is True
+
+    def test_single_scan_forward(self):
+        from src.models.model_factory import build_model
+        model = build_model("quantum_gnn_multimodal", pretrained=False)
+        model.eval()
+
+        img = torch.rand(1, 3, 224, 224)
+        meta = torch.tensor([[0.45, 1.0]])
+        with torch.no_grad():
+            out = model(img, meta, return_logits=False)
+        assert out.shape == (1, 14)
+        assert out.min().item() >= 0.0
+        assert out.max().item() <= 1.0
+
+    def test_multi_scan_patient_graph_forward(self):
+        from src.models.model_factory import build_model
+        model = build_model("quantum_gnn_multimodal", pretrained=False)
+        model.eval()
+
+        K = 3  # 3 scans belonging to the same patient
+        img = torch.rand(K, 3, 224, 224)
+        meta = torch.tensor([[0.5, 0.0], [0.5, 0.0], [0.5, 0.0]])
+        # All-to-all edges with self-loops
+        edge_index = torch.tensor([[i for i in range(K) for j in range(K)],
+                                   [j for i in range(K) for j in range(K)]], dtype=torch.long)
+        with torch.no_grad():
+            out = model(img, meta, graph_edge_index=edge_index, return_logits=False)
+        assert out.shape == (K, 14)
+        assert out.min().item() >= 0.0
+        assert out.max().item() <= 1.0
+
+    def test_multi_scan_backward_no_nan(self):
+        from src.models.model_factory import build_model
+        from src.training.losses import WeightedBCELoss
+
+        model = build_model("quantum_gnn_multimodal", pretrained=False)
+        criterion = WeightedBCELoss()
+
+        K = 2
+        img = torch.rand(K, 3, 224, 224)
+        meta = torch.tensor([[0.3, 1.0], [0.3, 1.0]])
+        labels = torch.zeros(K, 14)
+        labels[0, 1] = 1.0
+        labels[1, 3] = 1.0
+
+        edge_index = torch.tensor([[0, 1, 0, 1], [0, 1, 1, 0]], dtype=torch.long)
+        logits = model(img, meta, graph_edge_index=edge_index, return_logits=True)
+        loss = criterion(logits, labels)
+        loss.backward()
+
+        for name, p in model.named_parameters():
+            if p.grad is not None:
+                assert not torch.isnan(p.grad).any(), f"NaN in {name}"

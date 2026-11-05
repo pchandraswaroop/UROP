@@ -131,7 +131,10 @@ class ExplanationService:
             return {"status": "error", "message": "Graph data missing from inference result."}
 
         # Check if the model actually uses a GNN branch
-        has_gnn = hasattr(result.model_instance, "clinical_branch") and "GNN" in result.model_instance.clinical_branch.__class__.__name__
+        has_gnn = (
+            (hasattr(result.model_instance, "gnn_branch") and result.model_instance.gnn_branch is not None) or
+            (hasattr(result.model_instance, "clinical_branch") and "GNN" in result.model_instance.clinical_branch.__class__.__name__)
+        )
 
         if not has_gnn:
             return {

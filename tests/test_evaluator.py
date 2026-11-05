@@ -17,6 +17,7 @@ from src.training.evaluator import (
     generate_comparison_plots,
     generate_comparison_report,
     visualize_test_predictions,
+    evaluate_scan_count_subgroups,
 )
 from src.models.model_factory import build_model
 
@@ -123,3 +124,17 @@ def test_visualize_test_predictions_dummy(tmp_path):
     for p in saved:
         assert p.exists()
         assert p.stat().st_size > 0
+
+
+def test_evaluate_scan_count_subgroups(mock_results_dir):
+    test_df = pd.DataFrame([
+        {"image_index": 0, "patient_id": 101, "age": 45, "sex": "M", "labels": "[1, 3]"},
+        {"image_index": 1, "patient_id": 101, "age": 45, "sex": "M", "labels": "[1]"},
+        {"image_index": 2, "patient_id": 102, "age": 60, "sex": "F", "labels": "[]"},
+    ])
+    df = evaluate_scan_count_subgroups(test_df, results_dir=mock_results_dir, models=THREE_MODELS)
+    assert len(df) == 3
+    assert "Single-Scan Scans" in df.columns
+    assert "Multi-Scan Scans" in df.columns
+    assert df.loc[0, "Single-Scan Scans"] == 1
+    assert df.loc[0, "Multi-Scan Scans"] == 2
