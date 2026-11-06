@@ -55,6 +55,14 @@ class Experiment:
         self.val_loader:   Optional[DataLoader] = None
         self.test_loader:  Optional[DataLoader] = None
 
+        self.mode: Optional[str] = cfg.get("mode", None)
+        self.train_scan_count: int = 0
+        self.val_scan_count: int = 0
+        self.test_scan_count: int = 0
+        self.train_patient_count: int = 0
+        self.val_patient_count: int = 0
+        self.test_patient_count: int = 0
+
         self.train_history: list = []
         self.val_metrics:   Dict[str, float] = {}
         self.test_metrics:  Dict[str, float] = {}
@@ -70,6 +78,7 @@ class Experiment:
         val_df,
         test_df,
         hf_dataset,
+        mode: Optional[str] = None,
     ) -> None:
         """Build model, dataloaders, optimizer, scheduler, and trainer.
 
@@ -82,6 +91,21 @@ class Experiment:
         from src.dataset.dataloader import get_dataloader
 
         logger.info("Setting up experiment '%s' on device=%s", self.name, self.device)
+
+        if mode is not None:
+            self.mode = mode
+        if hasattr(train_df, "__len__"):
+            self.train_scan_count = len(train_df)
+            if hasattr(train_df, "columns") and "patient_id" in train_df.columns:
+                self.train_patient_count = int(train_df["patient_id"].nunique())
+        if hasattr(val_df, "__len__"):
+            self.val_scan_count = len(val_df)
+            if hasattr(val_df, "columns") and "patient_id" in val_df.columns:
+                self.val_patient_count = int(val_df["patient_id"].nunique())
+        if hasattr(test_df, "__len__"):
+            self.test_scan_count = len(test_df)
+            if hasattr(test_df, "columns") and "patient_id" in test_df.columns:
+                self.test_patient_count = int(test_df["patient_id"].nunique())
 
         # ── DataLoaders ──────────────────────────────────────────────
         batch_size  = self.cfg.get("batch_size", 4)
@@ -309,5 +333,29 @@ class Experiment:
         history_path = out / "train_history.json"
         with open(history_path, "w") as f:
             json.dump(self.train_history, f, indent=2, default=str)
+
+        # Experiment metadata snapshot
+        metadata = {
+            "experiment": self.name,
+            "mode": getattr(self, "mode", self.cfg.get("mode", "unspecified")),
+            "device": str(self.device),
+            "train_scans": getattr(self, "train_scan_count", len(self.train_loader.dataset) if self.train_loader else 0),
+            "val_scans": getattr(self, "val_scan_count", len(self.val_loader.dataset) if self.val_loader else 0),
+            "test_scans": getattr(self, "test_scan_count", len(self.test_loader.dataset) if self.test_loader else 0),
+            "train_patients": getattr(self, "train_patient_count", 0),
+            "val_patients": getattr(self, "val_patient_count", 0),
+            "test_patients": getattr(self, "test_patient_count", 0),
+            "epochs_trained": len(self.train_history),
+            "best_epoch": getattr(self, "best_epoch", 0) + 1,
+            "training_time_seconds": getattr(self, "training_time_seconds", 0.0),
+            "best_checkpoint_path": self.best_checkpoint_path,
+            "val_auc_mean": self.val_metrics.get("auc_mean", None),
+            "val_f1_macro": self.val_metrics.get("f1_macro", None),
+            "test_auc_mean": self.test_metrics.get("auc_mean", None),
+            "test_f1_macro": self.test_metrics.get("f1_macro", None),
+        }
+        meta_path = out / "experiment_metadata.json"
+        with open(meta_path, "w") as f:
+            json.dump(metadata, f, indent=2, default=str)
 
         logger.info("Results saved to %s", out)

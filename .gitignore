@@ -60,6 +60,9 @@ wandb/
 Thumbs.db
 desktop.ini
 
+# --- Scratch & Temporary Debug ---
+scratch/
+
 # --- Secrets & Environment Variables ---
 .env
 .env.*
