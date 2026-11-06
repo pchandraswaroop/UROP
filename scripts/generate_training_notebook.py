@@ -145,26 +145,28 @@ print("\\n[SUCCESS] Cell 1 complete: Hardware and packages verified.")
 
 # Cell 2: Repository Setup
 cells.append(nbf.v4.new_markdown_cell("""## Cell 2 — Repository Setup & Git Synchronization
-**Purpose**: Clones or synchronizes the GitHub repository (`main`), verifies working directory, and checks for critical codebase and split files."""))
+**Purpose**: Clones or synchronizes the GitHub repository (`execution-readiness`), verifies working directory, and checks for critical codebase and split files."""))
 
 cells.append(nbf.v4.new_code_cell("""# ── Cell 2: Repository Setup & Git Synchronization ───────────────────────────
 import os, sys, subprocess, shutil
 from pathlib import Path
 
-REPO_URL  = "https://github.com/pchandraswaroop/UROP.git"
-REPO_PATH = "/content/UROP" if os.path.exists("/content") else os.getcwd()
+REPO_URL      = "https://github.com/pchandraswaroop/UROP.git"
+REPO_PATH     = "/content/UROP" if os.path.exists("/content") else os.getcwd()
+TARGET_BRANCH = os.environ.get("UROP_BRANCH", "execution-readiness")
 
 # Clone or pull latest cleanly
 if not os.path.exists(REPO_PATH):
-    print(f"Cloning repository {REPO_URL} into {REPO_PATH}...")
-    subprocess.check_call(["git", "clone", REPO_URL, REPO_PATH])
+    print(f"Cloning repository {REPO_URL} (branch: {TARGET_BRANCH}) into {REPO_PATH}...")
+    subprocess.check_call(["git", "clone", "-b", TARGET_BRANCH, REPO_URL, REPO_PATH])
 else:
     print(f"Repository directory located at: {REPO_PATH}")
     if os.path.exists(os.path.join(REPO_PATH, ".git")):
-        print("Synchronizing latest commits from GitHub main branch...")
+        print(f"Synchronizing latest commits from GitHub branch '{TARGET_BRANCH}'...")
         try:
-            subprocess.check_call(["git", "-C", REPO_PATH, "fetch", "origin", "main"])
-            subprocess.check_call(["git", "-C", REPO_PATH, "reset", "--hard", "origin/main"])
+            subprocess.check_call(["git", "-C", REPO_PATH, "fetch", "origin", TARGET_BRANCH])
+            subprocess.check_call(["git", "-C", REPO_PATH, "checkout", TARGET_BRANCH])
+            subprocess.check_call(["git", "-C", REPO_PATH, "reset", "--hard", f"origin/{TARGET_BRANCH}"])
         except Exception as e:
             print(f"Note on git synchronization: {e}")
     else:
