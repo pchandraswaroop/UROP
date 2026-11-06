@@ -180,9 +180,17 @@ class MultiModalCXRModel(nn.Module):
             else:
                 node_feats = torch.cat([img_feats, meta], dim=-1)  # [B, q_out + 2]
 
-            # If no graph edges provided, default to self-loops (isolated scans)
+            # Validate graph edge indices against available node features
             if graph_edge_index is None:
-                graph_edge_index = torch.arange(B, device=images.device, dtype=torch.long).repeat(2, 1)
+                graph_edge_index = torch.arange(node_feats.shape[0], device=images.device, dtype=torch.long).repeat(2, 1)
+            elif graph_edge_index.numel() > 0:
+                max_node_idx = int(graph_edge_index.max().item())
+                if max_node_idx >= node_feats.shape[0]:
+                    raise ValueError(
+                        f"Invalid graph structure: graph_edge_index contains node index {max_node_idx}, "
+                        f"which exceeds the node feature count of {node_feats.shape[0]} (node_feats shape: {list(node_feats.shape)}). "
+                        f"All graph_edge_index indices must be in the valid interval [0, {node_feats.shape[0] - 1}]."
+                    )
 
             gnn_feats = self.gnn_branch(node_feats, graph_edge_index)  # [B_nodes, gnn_out]
             if gnn_feats.shape[0] != B:

@@ -36,7 +36,7 @@ class ExplanationService:
         result: PredictionResult,
         target_disease: str,
     ) -> Dict[str, Any]:
-        """Generate Grad-CAM++ or ViT attribution heatmap and overlay."""
+        """Generate Grad-CAM++ or ViT attribution heatmap and overlay on primary scan."""
         if result.model_instance is None or result.image_tensor is None:
             return {"status": "error", "message": "Model instance or image tensor not available."}
 
@@ -58,8 +58,11 @@ class ExplanationService:
 
         try:
             explainer = get_image_explainer(model)
-            gx = result.graph_x if (result.graph_x is not None and result.image_tensor is not None and result.graph_x.shape[0] == result.image_tensor.shape[0]) else None
-            ge = result.graph_edge_index if gx is not None else None
+            # Visual saliency evaluates the primary radiograph: isolate graph context to a single-node self-loop
+            B_img = result.image_tensor.shape[0]
+            gx = result.meta_tensor if result.meta_tensor is not None else None
+            ge = torch.arange(B_img, device=result.image_tensor.device, dtype=torch.long).repeat(2, 1)
+
             hmap = explainer.generate(
                 result.image_tensor,
                 result.meta_tensor,
@@ -91,7 +94,7 @@ class ExplanationService:
         result: PredictionResult,
         target_disease: str,
     ) -> Dict[str, Any]:
-        """Compute exact analytical Shapley values for Age and Sex."""
+        """Compute exact analytical Shapley values for primary scan Age and Sex."""
         if result.model_instance is None or result.image_tensor is None or result.meta_tensor is None:
             return {"status": "error", "message": "Inference context missing."}
 
@@ -102,11 +105,16 @@ class ExplanationService:
 
         try:
             tab_explainer = TabularFeatureExplainer(result.model_instance, num_classes=14)
+            # Isolate tabular attribution on primary scan to a single-node self-loop matching image_tensor
+            B_img = result.image_tensor.shape[0]
+            gx = result.meta_tensor if result.meta_tensor is not None else None
+            ge = torch.arange(B_img, device=result.image_tensor.device, dtype=torch.long).repeat(2, 1)
+
             shap_dict = tab_explainer.explain_instance(
                 result.image_tensor,
                 result.meta_tensor,
-                graph_x=result.graph_x,
-                graph_edge_index=result.graph_edge_index,
+                graph_x=gx,
+                graph_edge_index=ge,
             )
 
             age_shap = float(shap_dict["Age"][0, disease_idx])
@@ -128,7 +136,7 @@ class ExplanationService:
         result: PredictionResult,
         target_disease: str,
     ) -> Dict[str, Any]:
-        """Explain scan graph relationships or document single-scan limitations."""
+        """Explain scan graph relationships using actual companion scans, or report single-scan note."""
         if result.model_instance is None or result.graph_x is None or result.graph_edge_index is None:
             return {"status": "error", "message": "Graph data missing from inference result."}
 
@@ -158,12 +166,38 @@ class ExplanationService:
                 ),
             }
 
+        # For multi-scan evaluations, utilize the actual companion scan tensors
+        images = result.all_image_tensors if result.all_image_tensors is not None else result.image_tensor
+        meta = result.all_meta_tensors if result.all_meta_tensors is not None else result.meta_tensor
+
+        if images is None or meta is None:
+            return {"status": "error", "message": "Companion scan images or metadata not available."}
+
+        if images.shape[0] < result.node_count:
+            return {
+                "status": "error",
+                "message": (
+                    f"Multi-scan tensor count mismatch: {images.shape[0]} images provided "
+                    f"for graph with {result.node_count} nodes. Real companion scan images are required."
+                ),
+            }
+
+        if result.graph_edge_index.numel() > 0:
+            max_idx = int(result.graph_edge_index.max().item())
+            if max_idx >= images.shape[0]:
+                return {
+                    "status": "error",
+                    "message": (
+                        f"Graph edge index {max_idx} exceeds available image tensor count {images.shape[0]}."
+                    ),
+                }
+
         try:
             disease_idx = DISEASE_LABEL_NAMES.index(target_disease)
             explainer = ScanGraphExplainer(result.model_instance, num_classes=14)
             exp = explainer.explain(
-                result.image_tensor,
-                result.meta_tensor,
+                images,
+                meta,
                 result.graph_x,
                 result.graph_edge_index,
                 target_class=disease_idx,
@@ -193,15 +227,34 @@ class ExplanationService:
             return {"status": "error", "message": "Inference context missing."}
 
         try:
+            # Multi-scan: route to full companion scan tensors if available and valid
+            if (
+                result.node_count > 1
+                and result.all_image_tensors is not None
+                and result.all_meta_tensors is not None
+                and result.graph_edge_index is not None
+                and (result.graph_edge_index.numel() == 0 or result.graph_edge_index.max() < result.all_image_tensors.shape[0])
+            ):
+                images = result.all_image_tensors
+                meta = result.all_meta_tensors
+                gx = result.graph_x
+                ge = result.graph_edge_index
+            else:
+                # Single-scan fallback: isolated single-node graph
+                images = result.image_tensor
+                meta = result.meta_tensor
+                gx = result.meta_tensor
+                ge = torch.arange(images.shape[0], device=images.device, dtype=torch.long).repeat(2, 1)
+
             mm = MultimodalAttribution(result.model_instance, num_classes=14)
             res = mm.attribute_instance(
-                result.image_tensor,
-                result.meta_tensor,
-                result.graph_x,
-                result.graph_edge_index,
+                images,
+                meta,
+                gx,
+                ge,
             )
 
-            # Average absolute contributions across samples (here batch_size=1)
+            # Average absolute contributions across samples
             mean_I = np.abs(res["Image"]).mean(axis=0)
             mean_M = np.abs(res["Clinical_Meta"]).mean(axis=0)
             mean_G = np.abs(res["Graph"]).mean(axis=0)

@@ -64,6 +64,8 @@ class PredictionResult:
     graph_x: Optional[torch.Tensor] = None
     graph_edge_index: Optional[torch.Tensor] = None
     raw_rgb: Optional[np.ndarray] = None
+    all_image_tensors: Optional[torch.Tensor] = None
+    all_meta_tensors: Optional[torch.Tensor] = None
 
     @property
     def is_demo(self) -> bool:
@@ -279,6 +281,8 @@ class CXRInferenceService:
             graph_x=gx,
             graph_edge_index=edge_index,
             raw_rgb=raw_rgb,
+            all_image_tensors=img_tensor,
+            all_meta_tensors=meta_tensor,
         )
 
     def _predict_demo(
@@ -337,4 +341,6 @@ class CXRInferenceService:
             graph_x=gx,
             graph_edge_index=edge_index,
             raw_rgb=raw_rgb,
+            all_image_tensors=img_tensor,
+            all_meta_tensors=meta_tensor,
         )
