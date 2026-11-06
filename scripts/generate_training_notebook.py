@@ -628,7 +628,7 @@ import pandas as pd
 
 history = exp_cnn.train_history
 epochs = [h[\"epoch\"] + 1 for h in history]
-train_losses = [h[\"loss\"] for h in history]
+train_losses = [h.get(\"train_loss\", h.get(\"loss\")) for h in history]
 val_losses = [h[\"val_loss\"] for h in history]
 val_aucs = [h.get(\"val_auc_mean\", float(\"nan\")) for h in history]
 
@@ -696,7 +696,7 @@ import pandas as pd
 
 history = exp_class_multi.train_history
 epochs = [h[\"epoch\"] + 1 for h in history]
-train_losses = [h[\"loss\"] for h in history]
+train_losses = [h.get(\"train_loss\", h.get(\"loss\")) for h in history]
 val_losses = [h[\"val_loss\"] for h in history]
 val_aucs = [h.get(\"val_auc_mean\", float(\"nan\")) for h in history]
 
@@ -764,7 +764,7 @@ import pandas as pd
 
 history = exp_gnn.train_history
 epochs = [h[\"epoch\"] + 1 for h in history]
-train_losses = [h[\"loss\"] for h in history]
+train_losses = [h.get(\"train_loss\", h.get(\"loss\")) for h in history]
 val_losses = [h[\"val_loss\"] for h in history]
 val_aucs = [h.get(\"val_auc_mean\", float(\"nan\")) for h in history]
 
@@ -832,7 +832,7 @@ import pandas as pd
 
 history = exp_qgnn.train_history
 epochs = [h[\"epoch\"] + 1 for h in history]
-train_losses = [h[\"loss\"] for h in history]
+train_losses = [h.get(\"train_loss\", h.get(\"loss\")) for h in history]
 val_losses = [h[\"val_loss\"] for h in history]
 val_aucs = [h.get(\"val_auc_mean\", float(\"nan\")) for h in history]
 
