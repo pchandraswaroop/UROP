@@ -115,19 +115,19 @@ class TestCheckpointLoader:
         assert "does not exist" in msg
 
     def test_loading_missing_checkpoint_raises_checkpoint_error(self):
-        model = build_model("cnn_only", pretrained=False)
+        model = nn.Sequential(nn.Linear(8, 4), nn.Linear(4, 2))
         with pytest.raises(CheckpointError, match="Cannot load invalid checkpoint"):
             ModelCheckpointLoader.load_weights("ghost_path.pt", model)
 
-    def test_saving_and_loading_valid_checkpoint(self, sample_pil_image):
-        model = build_model("cnn_only", pretrained=False)
+    def test_saving_and_loading_valid_checkpoint(self):
+        model = nn.Sequential(nn.Linear(8, 4), nn.Linear(4, 2))
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             ckpt_path = Path(tmp_dir) / "test_model.pt"
             torch.save({
                 "epoch": 5,
                 "state_dict": model.state_dict(),
-                "metrics": {"auc_mean": 0.825},
+                "metrics": {"val_auc_mean": 0.825},
             }, ckpt_path)
 
             is_valid, msg, meta = ModelCheckpointLoader.validate_checkpoint(ckpt_path, model=model)
@@ -136,6 +136,79 @@ class TestCheckpointLoader:
 
             loaded_meta = ModelCheckpointLoader.load_weights(ckpt_path, model)
             assert loaded_meta["epoch"] == 5
+
+    def test_validate_auroc_criteria(self):
+        from src.inference.checkpoint_loader import validate_auroc
+        # 1. 0.0 must be accepted
+        ok, val, _ = validate_auroc(0.0)
+        assert ok is True and val == 0.0
+
+        # 2. Valid range accepted
+        ok, val, _ = validate_auroc(0.785)
+        assert ok is True and val == 0.785
+        ok, val, _ = validate_auroc(1.0)
+        assert ok is True and val == 1.0
+
+        # 3. Non-numeric / boolean / None rejected
+        assert validate_auroc(None)[0] is False
+        assert validate_auroc(True)[0] is False
+        assert validate_auroc(False)[0] is False
+        assert validate_auroc("invalid_score")[0] is False
+
+        # 4. NaN and infinities rejected
+        assert validate_auroc(float("nan"))[0] is False
+        assert validate_auroc(float("inf"))[0] is False
+        assert validate_auroc(-float("inf"))[0] is False
+
+        # 5. Out of range rejected
+        assert validate_auroc(-0.01)[0] is False
+        assert validate_auroc(1.01)[0] is False
+
+    def test_find_best_checkpoint_strict_selection(self):
+        from src.inference.checkpoint_loader import ModelCheckpointLoader
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            exp_dir = root / "test_exp"
+            exp_dir.mkdir()
+
+            # ckpt 1: score 0.80, epoch 1
+            torch.save({"epoch": 1, "metrics": {"val_auc_mean": 0.80}}, exp_dir / "ckpt_epoch1_val_auc_mean=0.8000.pt")
+            # ckpt 2: score 0.92, epoch 2 (highest valid)
+            torch.save({"epoch": 2, "metrics": {"val_auc_mean": 0.92}}, exp_dir / "ckpt_epoch2_val_auc_mean=0.9200.pt")
+            # ckpt 3: score 0.0 (valid, but lower)
+            torch.save({"epoch": 3, "metrics": {"val_auc_mean": 0.0}}, exp_dir / "ckpt_epoch3_val_auc_mean=0.0000.pt")
+            # ckpt 4: score NaN (invalid, must be ignored)
+            torch.save({"epoch": 4, "metrics": {"val_auc_mean": float("nan")}}, exp_dir / "ckpt_epoch4_val_auc_mean=nan.pt")
+            # ckpt 5: score -0.5 (out of range, must be ignored)
+            torch.save({"epoch": 5, "metrics": {"val_auc_mean": -0.5}}, exp_dir / "ckpt_epoch5_val_auc_mean=-0.5000.pt")
+
+            best = ModelCheckpointLoader.find_best_checkpoint("test_exp", checkpoint_dir=root)
+            assert best is not None
+            assert best.name == "ckpt_epoch2_val_auc_mean=0.9200.pt"
+
+    def test_validate_checkpoint_strict_key_parity(self):
+        model = nn.Sequential(nn.Linear(4, 4), nn.Linear(4, 2))
+        state = model.state_dict()
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            # Missing key checkpoint
+            incomplete_state = {k: v for k, v in state.items() if "0.weight" not in k}
+            p1 = Path(tmp_dir) / "missing_key.pt"
+            torch.save({"state_dict": incomplete_state}, p1)
+
+            ok, msg, _ = ModelCheckpointLoader.validate_checkpoint(p1, model=model)
+            assert ok is False
+            assert "Strict key parity required" in msg
+
+            # Shape mismatch checkpoint
+            mismatched_state = {k: v.clone() for k, v in state.items()}
+            mismatched_state["0.weight"] = torch.zeros(10, 4)  # expected (4, 4)
+            p2 = Path(tmp_dir) / "shape_mismatch.pt"
+            torch.save({"state_dict": mismatched_state}, p2)
+
+            ok, msg, _ = ModelCheckpointLoader.validate_checkpoint(p2, model=model)
+            assert ok is False
+            assert "Tensor shape mismatch" in msg
 
 
 # =============================================================================

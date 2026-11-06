@@ -205,6 +205,28 @@ class IdentityQuantumLayer(nn.Module):
         return self.proj(x)
 
 
+def is_quantum_active(model_or_layer: Any) -> bool:
+    """Verify whether a model or layer genuinely executes a PennyLane quantum circuit.
+
+    Checks:
+      1. PennyLane library is imported and available.
+      2. Layer is an instance of QuantumLayer (not IdentityQuantumLayer).
+      3. Layer has active qnode and quantum_weights Parameter.
+    """
+    if hasattr(model_or_layer, "quantum_layer"):
+        layer = model_or_layer.quantum_layer
+    else:
+        layer = model_or_layer
+
+    return bool(
+        PENNYLANE_AVAILABLE
+        and isinstance(layer, QuantumLayer)
+        and hasattr(layer, "qnode")
+        and hasattr(layer, "quantum_weights")
+        and isinstance(getattr(layer, "quantum_weights", None), torch.nn.Parameter)
+    )
+
+
 def get_quantum_layer(
     input_dim: int,
     n_qubits: int = 4,
@@ -212,19 +234,32 @@ def get_quantum_layer(
     output_dim: int = 16,
     enabled: bool = True,
     device_name: str = "default.qubit",
+    allow_classical_fallback: bool = False,
 ) -> nn.Module:
     """Factory: return QuantumLayer or IdentityQuantumLayer based on availability.
 
     Args:
-        enabled: If False, always return IdentityQuantumLayer even if PennyLane
-                 is available. Use when running on CPU for speed.
+        enabled: If False, return IdentityQuantumLayer (e.g. classical baseline/ablation).
+        allow_classical_fallback: If False and enabled=True, raise ImportError when
+                                  PennyLane is not available, preventing silent fallback.
     """
-    if enabled and PENNYLANE_AVAILABLE:
-        return QuantumLayer(
-            input_dim=input_dim,
-            n_qubits=n_qubits,
-            n_layers=n_layers,
-            output_dim=output_dim,
-            device_name=device_name,
+    if enabled:
+        if PENNYLANE_AVAILABLE:
+            return QuantumLayer(
+                input_dim=input_dim,
+                n_qubits=n_qubits,
+                n_layers=n_layers,
+                output_dim=output_dim,
+                device_name=device_name,
+            )
+        if not allow_classical_fallback:
+            raise ImportError(
+                "PennyLane is required for quantum circuit execution (enabled=True). "
+                "Install with: pip install pennylane pennylane-lightning, "
+                "or explicitly pass allow_classical_fallback=True."
+            )
+        logger.warning(
+            "PennyLane not available; falling back to IdentityQuantumLayer "
+            "because allow_classical_fallback=True."
         )
     return IdentityQuantumLayer(input_dim=input_dim, output_dim=output_dim)

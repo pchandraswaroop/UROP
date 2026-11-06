@@ -101,6 +101,15 @@ variants_data = [
         "Classification Head": "Shared 14-head MLP",
     },
     {
+        "Variant": "cnn_gnn_multimodal",
+        "Image Backbone": "EfficientNet-B0",
+        "Quantum Layer": "None (Identity)",
+        "Clinical Encoder": "MLP Metadata Embedder",
+        "Graph Branch": "GraphSAGE (2-layer)",
+        "Fusion Type": "Disease-Specific Gating",
+        "Classification Head": "Per-Disease Heads (14x)",
+    },
+    {
         "Variant": "classical_multimodal",
         "Image Backbone": "EfficientNet-B0",
         "Quantum Layer": "None (Identity)",

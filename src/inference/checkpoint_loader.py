@@ -6,6 +6,7 @@ MultiModalCXRModel architectures.
 
 Strict Mode Guarantees:
   - Real Inference requires a verified, compatible checkpoint.
+  - Strict key and tensor-shape compatibility required (strict=True).
   - Incompatible or corrupted checkpoints raise CheckpointError with clear diagnostics.
   - Never silently falls back to random weights during real inference.
 """
@@ -13,6 +14,8 @@ Strict Mode Guarantees:
 from __future__ import annotations
 
 import logging
+import math
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -25,6 +28,32 @@ logger = logging.getLogger(__name__)
 class CheckpointError(Exception):
     """Raised when a checkpoint is missing, invalid, or architecturally incompatible."""
     pass
+
+
+def validate_auroc(score: Any) -> Tuple[bool, Optional[float], str]:
+    """Validate whether an AUROC score is numeric, finite, and in [0.0, 1.0].
+
+    Accepts:
+        0.0 (valid AUROC, e.g. inverted/adversarial classifier).
+        Any float in [0.0, 1.0].
+
+    Rejects:
+        None, strings, bools, NaN, +inf, -inf, < 0.0, > 1.0.
+    """
+    if score is None or isinstance(score, bool):
+        return False, None, "AUROC cannot be None or boolean"
+    try:
+        val = float(score)
+    except (ValueError, TypeError):
+        return False, None, f"AUROC value is non-numeric: {score!r}"
+
+    if not math.isfinite(val):
+        return False, None, f"AUROC value is not finite: {val}"
+
+    if val < 0.0 or val > 1.0:
+        return False, None, f"AUROC value out of range [0.0, 1.0]: {val}"
+
+    return True, val, "Valid AUROC"
 
 
 class ModelCheckpointLoader:
@@ -49,13 +78,86 @@ class ModelCheckpointLoader:
         return available
 
     @classmethod
+    def extract_checkpoint_auroc(cls, checkpoint_path: str | Path) -> Tuple[bool, Optional[float], str]:
+        """Extract and validate the validation AUROC score from a checkpoint file or filename.
+
+        Returns:
+            Tuple of (is_valid, float_score_or_None, reason_string)
+        """
+        path = Path(checkpoint_path)
+        if not path.exists():
+            return False, None, f"File does not exist: {path}"
+
+        score_candidate = None
+        try:
+            ckpt = torch.load(path, map_location="cpu", weights_only=False)
+            if isinstance(ckpt, dict):
+                metrics = ckpt.get("metrics", {})
+                if isinstance(metrics, dict) and "val_auc_mean" in metrics:
+                    score_candidate = metrics["val_auc_mean"]
+                elif "val_auc_mean" in ckpt:
+                    score_candidate = ckpt["val_auc_mean"]
+        except Exception:
+            pass
+
+        if score_candidate is None:
+            m = re.search(r"val_auc_mean=([0-9\.\-eE]+)", path.name)
+            if m:
+                score_candidate = m.group(1)
+
+        if score_candidate is None:
+            return False, None, f"No AUROC score found in checkpoint or filename: {path.name}"
+
+        return validate_auroc(score_candidate)
+
+    @classmethod
+    def find_best_checkpoint(
+        cls,
+        experiment: str,
+        checkpoint_dir: str | Path = "checkpoints",
+    ) -> Optional[Path]:
+        """Find the checkpoint with the highest valid validation AUROC for an experiment.
+
+        Rejects any checkpoint with invalid, missing, non-finite, or out-of-range AUROC.
+        Returns None if no verified checkpoint exists.
+        """
+        ckpt_root = Path(checkpoint_dir)
+        exp_dir = ckpt_root / experiment
+        search_dirs = [exp_dir] if exp_dir.exists() else [ckpt_root]
+
+        candidates: List[Tuple[float, int, Path]] = []
+        for d in search_dirs:
+            if not d.exists():
+                continue
+            for path in list(d.glob("*.pt")) + list(d.glob("*.pth")):
+                # Check path matches experiment
+                if d == ckpt_root and experiment not in path.name and experiment not in path.parent.name:
+                    continue
+                is_valid, score, _ = cls.extract_checkpoint_auroc(path)
+                if is_valid and score is not None:
+                    ep_match = re.search(r"epoch(\d+)", path.name)
+                    epoch = int(ep_match.group(1)) if ep_match else 0
+                    candidates.append((score, epoch, path))
+
+        if not candidates:
+            return None
+
+        # Sort descending by score, then descending by epoch
+        candidates.sort(key=lambda x: (x[0], x[1]), reverse=True)
+        best_path = candidates[0][2]
+        logger.info("Found best checkpoint for %s: %s (AUROC=%.4f)", experiment, best_path.name, candidates[0][0])
+        return best_path
+
+    @classmethod
     def validate_checkpoint(
         cls,
         checkpoint_path: str | Path,
         model: Optional[nn.Module] = None,
         device: str = "cpu",
     ) -> Tuple[bool, str, Optional[Dict[str, Any]]]:
-        """Validate whether a checkpoint file exists and is structurally compatible.
+        """Validate whether a checkpoint file exists and is strictly structurally compatible.
+
+        Requires exact state_dict key matching and identical tensor shapes.
 
         Returns:
             Tuple of (is_valid, message, checkpoint_metadata_dict)
@@ -74,35 +176,80 @@ class ModelCheckpointLoader:
         # Determine state_dict format
         if isinstance(ckpt, dict) and "state_dict" in ckpt:
             state_dict = ckpt["state_dict"]
+            metrics = ckpt.get("metrics", {})
             metadata = {
                 "epoch": ckpt.get("epoch", "unknown"),
-                "metrics": ckpt.get("metrics", {}),
+                "metrics": metrics,
                 "has_optimizer": "optimizer" in ckpt,
             }
+            # If val_auc_mean is present in metrics, validate it
+            if isinstance(metrics, dict) and "val_auc_mean" in metrics:
+                auc_valid, auc_val, reason = validate_auroc(metrics["val_auc_mean"])
+                if not auc_valid:
+                    return False, f"Checkpoint contains invalid AUROC value: {reason}", metadata
         elif isinstance(ckpt, dict):
-            # Raw state dict
             state_dict = ckpt
             metadata = {"epoch": "raw_state_dict", "metrics": {}, "has_optimizer": False}
         else:
             return False, f"Unexpected checkpoint type: {type(ckpt).__name__}", None
 
-        # If a reference model is provided, check key overlap
+        # Exact key and shape compatibility
         if model is not None:
-            model_keys = set(model.state_dict().keys())
+            model_state = model.state_dict()
+            model_keys = set(model_state.keys())
             ckpt_keys = set(state_dict.keys())
 
             missing = model_keys - ckpt_keys
             unexpected = ckpt_keys - model_keys
 
-            # If more than 50% of model keys are missing, reject as incompatible
-            if len(missing) > len(model_keys) * 0.5:
+            if len(missing) > 0 or len(unexpected) > 0:
                 return (
                     False,
-                    f"Checkpoint architecture mismatch: {len(missing)} missing keys out of {len(model_keys)}",
+                    f"Checkpoint architecture mismatch: {len(missing)} missing keys, "
+                    f"{len(unexpected)} unexpected keys. Strict key parity required.",
                     metadata,
                 )
 
-        return True, "Checkpoint is valid and compatible.", metadata
+            for k in model_keys:
+                if state_dict[k].shape != model_state[k].shape:
+                    return (
+                        False,
+                        f"Tensor shape mismatch for '{k}': expected {model_state[k].shape}, "
+                        f"got {state_dict[k].shape}",
+                        metadata,
+                    )
+
+        return True, "Checkpoint is valid and strictly compatible.", metadata
+
+    @classmethod
+    def load_checkpoint(
+        cls,
+        model: nn.Module,
+        checkpoint_path: str | Path,
+        device: str = "cpu",
+        strict: bool = True,
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Validate and strictly load checkpoint weights into model.
+
+        Returns:
+            Tuple of (success_bool, info_dict)
+        """
+        is_valid, msg, meta = cls.validate_checkpoint(checkpoint_path, model=model, device=device)
+        if not is_valid:
+            logger.warning("Checkpoint validation failed for %s: %s", checkpoint_path, msg)
+            return False, {"error": msg}
+
+        path = Path(checkpoint_path)
+        ckpt = torch.load(path, map_location=device, weights_only=False)
+        state_dict = ckpt["state_dict"] if (isinstance(ckpt, dict) and "state_dict" in ckpt) else ckpt
+
+        try:
+            model.load_state_dict(state_dict, strict=strict)
+            model.eval()
+            return True, meta or {}
+        except Exception as e:
+            logger.warning("Failed to load state_dict into model: %s", e)
+            return False, {"error": str(e)}
 
     @classmethod
     def load_weights(
@@ -112,19 +259,9 @@ class ModelCheckpointLoader:
         device: str = "cpu",
         strict: bool = True,
     ) -> Dict[str, Any]:
-        """Load weights into model. Raises CheckpointError on failure."""
-        is_valid, msg, meta = cls.validate_checkpoint(checkpoint_path, model=model, device=device)
-        if not is_valid:
-            raise CheckpointError(f"Cannot load invalid checkpoint: {msg}")
-
-        path = Path(checkpoint_path)
-        ckpt = torch.load(path, map_location=device, weights_only=False)
-        state_dict = ckpt["state_dict"] if (isinstance(ckpt, dict) and "state_dict" in ckpt) else ckpt
-
-        try:
-            model.load_state_dict(state_dict, strict=strict)
-            model.eval()
-            logger.info("Successfully loaded checkpoint weights from %s", path)
-            return meta or {}
-        except Exception as e:
-            raise CheckpointError(f"Error loading state_dict into model: {str(e)}") from e
+        """Load weights into model strictly. Raises CheckpointError on failure."""
+        success, info = cls.load_checkpoint(model, checkpoint_path, device=device, strict=strict)
+        if not success:
+            raise CheckpointError(f"Cannot load invalid checkpoint: {info.get('error')}")
+        logger.info("Successfully loaded checkpoint weights from %s", checkpoint_path)
+        return info

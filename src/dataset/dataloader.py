@@ -106,6 +106,27 @@ class CXRDataset(Dataset):
 
 # ── Patient-Grouped Batch Sampler ───────────────────────────────────────────
 
+def balanced_chunks(scans: list[int], max_size: int) -> list[list[int]]:
+    """Divide a scan list into balanced chunks each of size <= max_size.
+
+    For K > max_size, partitions into M = ceil(K / max_size) chunks of
+    nearly equal size, avoiding pathological singleton remainders where arithmetic permits.
+    """
+    K = len(scans)
+    if K <= max_size:
+        return [scans]
+    n_chunks = (K + max_size - 1) // max_size
+    base = K // n_chunks
+    rem = K % n_chunks
+    chunks = []
+    start = 0
+    for i in range(n_chunks):
+        size = base + (1 if i < rem else 0)
+        chunks.append(scans[start : start + size])
+        start += size
+    return chunks
+
+
 class PatientGroupedBatchSampler(torch.utils.data.Sampler):
     """Batch sampler that groups all companion scans of a patient into the same batch.
 
@@ -118,9 +139,20 @@ class PatientGroupedBatchSampler(torch.utils.data.Sampler):
       - At each epoch, patient clusters are randomly shuffled (if shuffle=True).
       - Patients are accumulated into batches targeting `batch_size` scans.
       - If an individual patient has more scans than batch_size, their scans are divided into
-        sub-batches of at most `batch_size`.
+        balanced sub-batches of at most `batch_size`.
       - Cross-patient isolation is strictly preserved: different patients within the batch
         remain disconnected in the graph (0 cross-patient edges).
+
+    Coverage & Invariants:
+      - Default drop_last=False: Every dataset index appears exactly once per epoch (1:1 multiplicity).
+        Recommended for all clinical training with sample-weighted loss aggregation.
+      - drop_last=True: Strict batch size enforcement. Every emitted batch has exactly batch_size
+        samples (len(b) == batch_size). Any incomplete batch (< batch_size), whether intermediate
+        or trailing, is dropped. Note: On datasets with variable patient scan counts, strict
+        drop_last=True discards substantial data (up to ~68% at B=32) because variable-sized patient
+        units cannot always tile exactly into B without splitting patient graphs.
+      - Capacity invariant: No batch ever exceeds batch_size (len(batch) <= batch_size).
+      - Exact length: __len__ matches the exact number of batches yielded by __iter__.
     """
 
     def __init__(
@@ -141,46 +173,56 @@ class PatientGroupedBatchSampler(torch.utils.data.Sampler):
         # Group dataset row indices [0 .. len(df)-1] by patient_id
         clean_df = index_df.reset_index(drop=True)
         groups = clean_df.groupby("patient_id").indices
-        self.patient_groups: list[list[int]] = [list(indices) for indices in groups.values()]
 
-    def __iter__(self):
-        import numpy as np
-        rng = np.random.RandomState(self.seed + self.epoch)
-        order = list(range(len(self.patient_groups)))
-        if self.shuffle:
-            rng.shuffle(order)
+        # Build patient units: oversized patients are partitioned into balanced sub-groups
+        self.patient_units: list[list[int]] = []
+        for pid, indices in groups.items():
+            scan_list = list(indices)
+            if len(scan_list) > self.batch_size:
+                for chunk in balanced_chunks(scan_list, self.batch_size):
+                    self.patient_units.append(chunk)
+            else:
+                self.patient_units.append(scan_list)
 
-        current_batch: list[int] = []
-        for g_idx in order:
-            scans = self.patient_groups[g_idx]
-
-            # If this patient alone exceeds batch_size, yield in chunks
-            if len(scans) >= self.batch_size:
-                if len(current_batch) > 0:
-                    yield current_batch
-                    current_batch = []
-                for i in range(0, len(scans), self.batch_size):
-                    chunk = scans[i : i + self.batch_size]
-                    yield chunk
-                continue
-
-            # If adding this patient exceeds batch_size, flush current_batch first
-            if len(current_batch) + len(scans) > self.batch_size:
-                if len(current_batch) > 0:
-                    yield current_batch
-                    current_batch = []
-
-            current_batch.extend(scans)
-
-        if len(current_batch) > 0:
-            yield current_batch
+        self._batches: list[list[int]] = self._generate_batches()
 
     def set_epoch(self, epoch: int) -> None:
         self.epoch = epoch
+        self._batches = self._generate_batches()
+
+    def _generate_batches(self) -> list[list[int]]:
+        import numpy as np
+        rng = np.random.RandomState(self.seed + self.epoch)
+        order = list(range(len(self.patient_units)))
+        if self.shuffle:
+            rng.shuffle(order)
+
+        batches: list[list[int]] = []
+        current_batch: list[int] = []
+
+        for u_idx in order:
+            unit = self.patient_units[u_idx]
+            # If adding this patient unit exceeds batch_size, finalize current_batch
+            if len(current_batch) + len(unit) > self.batch_size:
+                if len(current_batch) > 0:
+                    if not self.drop_last or len(current_batch) == self.batch_size:
+                        batches.append(current_batch)
+                    current_batch = []
+
+            current_batch.extend(unit)
+
+        if len(current_batch) > 0:
+            if not self.drop_last or len(current_batch) == self.batch_size:
+                batches.append(current_batch)
+
+        return batches
+
+    def __iter__(self):
+        for batch in self._batches:
+            yield batch
 
     def __len__(self) -> int:
-        total_scans = sum(len(g) for g in self.patient_groups)
-        return total_scans // self.batch_size if self.drop_last else (total_scans + self.batch_size - 1) // self.batch_size
+        return len(self._batches)
 
 
 # ── DataLoader Factory ────────────────────────────────────────────────────────
@@ -196,6 +238,7 @@ def get_dataloader(
     pin_memory: bool = False,
     persistent_workers: bool = False,
     patient_grouping: bool = True,
+    drop_last: bool = False,
 ) -> DataLoader:
     """Build a DataLoader for the given split.
 
@@ -233,7 +276,7 @@ def get_dataloader(
             index_df=index_df,
             batch_size=batch_size,
             shuffle=shuffle,
-            drop_last=shuffle,
+            drop_last=drop_last,
         )
         loader = DataLoader(
             dataset,
@@ -251,7 +294,7 @@ def get_dataloader(
             num_workers=num_workers,
             pin_memory=pin_memory,
             persistent_workers=(persistent_workers and num_workers > 0),
-            drop_last=shuffle,   # drop last incomplete batch in training
+            drop_last=drop_last,
             collate_fn=_collate_fn,
         )
 

@@ -169,6 +169,7 @@ with col_input:
     st.subheader("3. Model Configuration")
     exp_options = [
         "quantum_gnn_multimodal",
+        "cnn_gnn_multimodal",
         "classical_multimodal",
         "cnn_only",
         "vit_only",

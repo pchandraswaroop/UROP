@@ -305,8 +305,9 @@ class Trainer:
         """
         self.model.train()
         acc        = MetricAccumulator()
-        total_loss = 0.0
-        n_batches  = 0
+        total_loss_sum = 0.0
+        total_samples  = 0
+        n_batches      = 0
 
         if hasattr(loader, "batch_sampler") and hasattr(loader.batch_sampler, "set_epoch"):
             loader.batch_sampler.set_epoch(epoch)
@@ -343,14 +344,16 @@ class Trainer:
 
             probs = torch.sigmoid(logits.detach())
             acc.update(probs, labels.detach())
-            total_loss += loss.item()
-            n_batches  += 1
+            b_size = images.shape[0]
+            total_loss_sum += loss.item() * b_size
+            total_samples  += b_size
+            n_batches      += 1
 
         if self.scheduler is not None:
             self.scheduler.step()
 
         metrics = acc.compute()
-        metrics["loss"]  = total_loss / max(n_batches, 1)
+        metrics["loss"]  = total_loss_sum / max(total_samples, 1)
         metrics["epoch"] = epoch
         return metrics
 
@@ -372,8 +375,9 @@ class Trainer:
         """
         self.model.eval()
         acc        = MetricAccumulator()
-        total_loss = 0.0
-        n_batches  = 0
+        total_loss_sum = 0.0
+        total_samples  = 0
+        n_batches      = 0
 
         for batch in loader:
             images = batch["image"].to(self.device)
@@ -393,11 +397,13 @@ class Trainer:
             probs  = torch.sigmoid(logits)
 
             acc.update(probs, labels)
-            total_loss += loss.item()
-            n_batches  += 1
+            b_size = images.shape[0]
+            total_loss_sum += loss.item() * b_size
+            total_samples  += b_size
+            n_batches      += 1
 
         metrics = acc.compute()
-        metrics["loss"] = total_loss / max(n_batches, 1)
+        metrics["loss"] = total_loss_sum / max(total_samples, 1)
 
         if return_raw:
             all_probs, all_targets = acc.get_raw()

@@ -321,3 +321,41 @@ class TestTrainerTrainEpoch:
         for entry in history:
             assert "train_loss" in entry
             assert "val_loss"   in entry
+
+    def test_sample_weighted_loss_aggregation_unequal_batches(self):
+        """Verify that epoch loss is weighted by the number of samples in each batch,
+        rather than simple unweighted mean of batch losses."""
+        trainer = self._make_trainer()
+
+        # Batch 1 has 10 samples, Batch 2 has 2 samples
+        b1_imgs = torch.zeros(10, 3, 224, 224)
+        b1_meta = torch.zeros(10, 2)
+        b1_lbls = torch.zeros(10, NUM_CLASSES)
+
+        b2_imgs = torch.ones(2, 3, 224, 224)
+        b2_meta = torch.ones(2, 2)
+        b2_lbls = torch.ones(2, NUM_CLASSES)
+
+        class _UnevenLoader:
+            def __iter__(self):
+                yield {"image": b1_imgs, "meta": b1_meta, "label": b1_lbls}
+                yield {"image": b2_imgs, "meta": b2_meta, "label": b2_lbls}
+            def __len__(self):
+                return 2
+
+        with torch.no_grad():
+            out1 = trainer._model_forward(b1_imgs, b1_meta, return_logits=True)
+            loss1 = trainer.criterion(out1, b1_lbls).item()
+            out2 = trainer._model_forward(b2_imgs, b2_meta, return_logits=True)
+            loss2 = trainer.criterion(out2, b2_lbls).item()
+
+        expected_weighted_loss = (10 * loss1 + 2 * loss2) / 12.0
+        unweighted_loss = (loss1 + loss2) / 2.0
+
+        eval_metrics = trainer.eval_epoch(_UnevenLoader(), split="val")
+        assert np.isclose(eval_metrics["loss"], expected_weighted_loss, atol=1e-5), (
+            f"Expected sample-weighted loss {expected_weighted_loss:.6f}, got {eval_metrics['loss']:.6f}"
+        )
+        assert not np.isclose(eval_metrics["loss"], unweighted_loss, atol=1e-3), (
+            f"Loss was improperly calculated using unweighted average"
+        )

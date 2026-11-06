@@ -452,7 +452,7 @@ for m_name in TEST_MODELS:
     n_params = sum(p.numel() for p in model.parameters())
     param_str = f"{n_params / 1e6:.2f}M"
     
-    is_quantum = "Active" if hasattr(model.quantum_layer, "circuit") or hasattr(model.quantum_layer, "qnode") else "Identity"
+    from src.models.quantum_layer import is_quantum_active\n    is_quantum = "Active" if is_quantum_active(model) else "Identity"
     has_gnn = "GraphSAGE" if getattr(model, "gnn_branch", None) is not None else "None"
     
     with torch.no_grad():
@@ -889,7 +889,7 @@ from pathlib import Path
 import json, os
 import pandas as pd
 import matplotlib.pyplot as plt
-from src.training.evaluator import load_experiment_metrics, generate_comparison_plots, evaluate_scan_count_subgroups
+from src.training.evaluator import load_experiment_metrics, generate_comparison_plots, evaluate_scan_count_subgroups, FOUR_MODELS\nfrom src.inference.checkpoint_loader import ModelCheckpointLoader, validate_auroc
 
 candidate_models = [
     ("cnn_only", "exp_cnn"),
@@ -1059,20 +1059,14 @@ available_ckpts = list(ckpt_dir.glob('checkpoint_epoch*.pt'))
 assert len(available_ckpts) > 0, "No checkpoint files found in checkpoints/quantum_gnn_multimodal/! Complete Cell 8G first."
 
 # Rank checkpoints strictly by validation AUROC score (val_auc_mean) from checkpoint payloads
-ranked_ckpts = []
-for p in available_ckpts:
-    try:
-        payload = torch.load(p, map_location='cpu', weights_only=False)
-        val_auc = payload.get('metrics', {}).get('val_auc_mean', -1.0)
-        ep = payload.get('epoch', -1)
-        ranked_ckpts.append((val_auc, ep, p))
-    except Exception as e:
-        print(f"Warning reading {p}: {e}")
+from src.inference.checkpoint_loader import ModelCheckpointLoader, validate_auroc
 
-assert len(ranked_ckpts) > 0, "No valid checkpoints could be loaded!"
-ranked_ckpts.sort(key=lambda x: x[0], reverse=True)
+best_checkpoint_path = ModelCheckpointLoader.find_best_checkpoint('quantum_gnn_multimodal', checkpoint_dir='checkpoints')
+assert best_checkpoint_path is not None, "No verified checkpoint with valid AUROC found for quantum_gnn_multimodal!"
 
-best_val_score, best_epoch_num, best_checkpoint_path = ranked_ckpts[0]
+is_valid_auc, best_val_score, _ = ModelCheckpointLoader.extract_checkpoint_auroc(best_checkpoint_path)
+payload = torch.load(best_checkpoint_path, map_location='cpu', weights_only=False)
+best_epoch_num = payload.get('epoch', 'N/A')
 
 print('==================================================')
 print('VERIFIED HIGHEST-SCORING CHECKPOINT FOR INFERENCE')

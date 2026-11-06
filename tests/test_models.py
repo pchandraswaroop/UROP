@@ -179,6 +179,41 @@ class TestQuantumLayer:
         assert x.grad is not None
         assert not torch.isnan(x.grad).any()
 
+    def test_quantum_layer_raises_importerror_when_pennylane_unavailable_and_no_fallback(self):
+        """Ensure quantum layer does not silently fall back to identity without explicit permission."""
+        from unittest.mock import patch
+        from src.models import quantum_layer
+
+        with patch.object(quantum_layer, "PENNYLANE_AVAILABLE", False):
+            with pytest.raises(ImportError, match="PennyLane is required"):
+                quantum_layer.get_quantum_layer(
+                    input_dim=100, enabled=True, allow_classical_fallback=False
+                )
+
+    def test_quantum_layer_allows_fallback_when_explicitly_set(self):
+        """Ensure quantum layer falls back to identity when allow_classical_fallback=True is set."""
+        from unittest.mock import patch
+        from src.models import quantum_layer
+        from src.models.quantum_layer import IdentityQuantumLayer
+
+        with patch.object(quantum_layer, "PENNYLANE_AVAILABLE", False):
+            m = quantum_layer.get_quantum_layer(
+                input_dim=100, output_dim=16, enabled=True, allow_classical_fallback=True
+            )
+            assert isinstance(m, IdentityQuantumLayer)
+            assert m.output_dim == 16
+
+    def test_is_quantum_active_helper(self):
+        """Verify is_quantum_active accurately discriminates real quantum from classical identity."""
+        from src.models.quantum_layer import IdentityQuantumLayer, is_quantum_active
+        ident = IdentityQuantumLayer(input_dim=64, output_dim=16)
+        assert is_quantum_active(ident) is False
+
+        # Dummy model with identity quantum layer
+        dummy_model = nn.Module()
+        dummy_model.quantum_layer = ident
+        assert is_quantum_active(dummy_model) is False
+
 
 # =============================================================================
 # MetadataEmbedder

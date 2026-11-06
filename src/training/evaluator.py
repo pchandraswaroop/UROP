@@ -32,6 +32,7 @@ from src.inference.preprocessing import InferencePreprocessor
 logger = logging.getLogger(__name__)
 
 THREE_MODELS = ["cnn_only", "classical_multimodal", "quantum_gnn_multimodal"]
+FOUR_MODELS = ["cnn_only", "classical_multimodal", "cnn_gnn_multimodal", "quantum_gnn_multimodal"]
 
 
 # ── Metric Aggregation & Comparison Table ─────────────────────────────────────
@@ -438,6 +439,7 @@ def evaluate_scan_count_subgroups(
     test_df: pd.DataFrame,
     results_dir: str | Path = "results",
     models: Optional[List[str]] = None,
+    predictions: Optional[Dict[str, Dict[str, np.ndarray]]] = None,
 ) -> pd.DataFrame:
     """Evaluate performance separately for single-scan vs multi-scan patient cohorts.
 
@@ -445,32 +447,105 @@ def evaluate_scan_count_subgroups(
       - Single-scan subgroup: Patients with exactly 1 radiograph in the dataset.
       - Multi-scan subgroup: Patients with >1 radiographs in the dataset.
 
+    Args:
+        test_df: DataFrame containing test samples with 'patient_id'.
+        results_dir: Directory containing per-model result folders.
+        models: List of model names to evaluate. Defaults to THREE_MODELS if None.
+        predictions: Optional dictionary mapping {model_name: {"probs": np.ndarray, "targets": np.ndarray}}.
+
     Returns:
-        DataFrame summarizing AUROC and sample counts across subgroups.
+        DataFrame summarizing authentic AUROC and sample counts across subgroups.
     """
+    from src.training.metrics import compute_metrics
+
     if models is None:
         models = THREE_MODELS
 
     patient_counts = test_df.groupby("patient_id")["patient_id"].transform("count")
-    n_single = int((patient_counts == 1).sum())
-    n_multi = int((patient_counts > 1).sum())
+    single_mask = (patient_counts == 1).to_numpy()
+    multi_mask = (patient_counts > 1).to_numpy()
+
+    n_single = int(single_mask.sum())
+    n_multi = int(multi_mask.sum())
 
     res_dir = Path(results_dir)
     rows = []
     for m in models:
-        test_file = res_dir / m / "test_metrics.json"
+        probs = None
+        targets = None
+
+        # 1. In-memory predictions dict
+        if predictions and m in predictions:
+            p_entry = predictions[m]
+            probs = p_entry.get("probs")
+            targets = p_entry.get("targets")
+
+        # 2. On-disk test_predictions.npz
+        if probs is None or targets is None:
+            pred_file = res_dir / m / "test_predictions.npz"
+            if pred_file.exists():
+                try:
+                    data = np.load(pred_file)
+                    probs = data["probs"]
+                    targets = data["targets"]
+                except Exception as e:
+                    logger.warning("Could not load test predictions for %s: %s", m, e)
+
+        # 3. Overall test metrics from test_metrics.json (fallback for overall AUC)
         overall_auc = float("nan")
+        test_file = res_dir / m / "test_metrics.json"
         if test_file.exists():
-            data = json.loads(test_file.read_text(encoding="utf-8"))
-            overall_auc = data.get("auc_mean", float("nan"))
+            try:
+                t_data = json.loads(test_file.read_text(encoding="utf-8"))
+                overall_auc = t_data.get("auc_mean", float("nan"))
+            except Exception:
+                pass
+
+        single_auc = float("nan")
+        multi_auc = float("nan")
+        single_valid = None
+        multi_valid = None
+
+        if probs is not None and targets is not None and len(probs) == len(test_df):
+            probs_arr = np.asarray(probs)
+            targets_arr = np.asarray(targets)
+
+            # Compute authentic scan-level subgroup metrics
+            if single_mask.sum() > 0:
+                s_metrics = compute_metrics(probs_arr[single_mask], targets_arr[single_mask])
+                single_auc = s_metrics.get("auc_mean", float("nan"))
+                single_valid = sum(
+                    1 for c in range(targets_arr.shape[1])
+                    if not np.isnan(s_metrics.get(f"{DISEASE_LABEL_NAMES[c]}/auc", float("nan")))
+                )
+
+            if multi_mask.sum() > 0:
+                m_metrics = compute_metrics(probs_arr[multi_mask], targets_arr[multi_mask])
+                multi_auc = m_metrics.get("auc_mean", float("nan"))
+                multi_valid = sum(
+                    1 for c in range(targets_arr.shape[1])
+                    if not np.isnan(m_metrics.get(f"{DISEASE_LABEL_NAMES[c]}/auc", float("nan")))
+                )
+
+            # Authentic overall AUROC
+            ov_metrics = compute_metrics(probs_arr, targets_arr)
+            overall_auc = ov_metrics.get("auc_mean", overall_auc)
+
+        single_val_fmt = round(float(single_auc), 4) if not np.isnan(single_auc) else "N/A"
+        multi_val_fmt = round(float(multi_auc), 4) if not np.isnan(multi_auc) else "N/A"
+        overall_val_fmt = round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A"
 
         rows.append({
             "Model": m,
             "Single-Scan Scans": n_single,
             "Multi-Scan Scans": n_multi,
-            "Overall Test AUROC": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
-            "Single-Scan AUROC (Est.)": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
-            "Multi-Scan AUROC (Est.)": round(float(overall_auc), 4) if not np.isnan(overall_auc) else "N/A",
+            "Overall Test AUROC": overall_val_fmt,
+            "Single-Scan AUROC": single_val_fmt,
+            "Multi-Scan AUROC": multi_val_fmt,
+            "Single-Scan AUROC (Est.)": single_val_fmt,  # Backwards compatibility
+            "Multi-Scan AUROC (Est.)": multi_val_fmt,   # Backwards compatibility
+            "Single-Scan Valid Classes": single_valid if single_valid is not None else "N/A",
+            "Multi-Scan Valid Classes": multi_valid if multi_valid is not None else "N/A",
         })
 
     return pd.DataFrame(rows)

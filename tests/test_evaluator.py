@@ -13,6 +13,7 @@ from PIL import Image
 
 from src.training.evaluator import (
     THREE_MODELS,
+    FOUR_MODELS,
     load_experiment_metrics,
     generate_comparison_plots,
     generate_comparison_report,
@@ -99,6 +100,7 @@ def test_generate_comparison_report(mock_results_dir, tmp_path):
 
 
 def test_visualize_test_predictions_dummy(tmp_path):
+    pytest.importorskip('timm')
     # Create small test df
     test_df = pd.DataFrame([
         {"image_index": 0, "patient_id": 101, "age": 45, "sex": "M", "labels": "[1, 3]"},
@@ -138,3 +140,110 @@ def test_evaluate_scan_count_subgroups(mock_results_dir):
     assert "Multi-Scan Scans" in df.columns
     assert df.loc[0, "Single-Scan Scans"] == 1
     assert df.loc[0, "Multi-Scan Scans"] == 2
+
+
+def test_four_models_constant():
+    """Verify FOUR_MODELS definition and compatibility."""
+    assert len(FOUR_MODELS) == 4
+    assert FOUR_MODELS == ["cnn_only", "classical_multimodal", "cnn_gnn_multimodal", "quantum_gnn_multimodal"]
+    assert "cnn_gnn_multimodal" not in THREE_MODELS
+    assert len(THREE_MODELS) == 3
+
+
+def test_authentic_subgroup_auroc_with_predictions(tmp_path):
+    """Verify that single-scan and multi-scan AUROCs are independently computed from authentic predictions."""
+    # Cohort:
+    # Patient 1: 1 scan (Single)
+    # Patient 2: 1 scan (Single)
+    # Patient 3: 2 scans (Multi)
+    # Patient 4: 2 scans (Multi)
+    # Total 6 scans (2 Single, 4 Multi)
+    test_df = pd.DataFrame([
+        {"patient_id": "P1", "age": 40, "sex": "M"},
+        {"patient_id": "P2", "age": 50, "sex": "F"},
+        {"patient_id": "P3", "age": 60, "sex": "M"},
+        {"patient_id": "P3", "age": 60, "sex": "M"},
+        {"patient_id": "P4", "age": 70, "sex": "F"},
+        {"patient_id": "P4", "age": 70, "sex": "F"},
+    ])
+
+    # Targets: 14 classes
+    targets = np.zeros((6, 14), dtype=np.float32)
+    # Class 0: Single-scan (idx 0 is 1, idx 1 is 0). Multi-scan (idx 2,3 is 1, idx 4,5 is 0)
+    targets[0, 0] = 1.0
+    targets[2, 0] = 1.0
+    targets[3, 0] = 1.0
+
+    # Predictions:
+    # For single-scan: perfect discrimination on class 0 (P1=0.9, P2=0.1 -> AUC=1.0)
+    # For multi-scan: inverted discrimination on class 0 (P3=0.1, P3=0.1, P4=0.9, P4=0.9 -> AUC=0.0)
+    probs = np.full((6, 14), 0.5, dtype=np.float32)
+    probs[0, 0] = 0.9
+    probs[1, 0] = 0.1
+    probs[2, 0] = 0.1
+    probs[3, 0] = 0.1
+    probs[4, 0] = 0.9
+    probs[5, 0] = 0.9
+
+    predictions = {
+        "quantum_gnn_multimodal": {
+            "probs": probs,
+            "targets": targets,
+        }
+    }
+
+    df = evaluate_scan_count_subgroups(
+        test_df,
+        results_dir=tmp_path,
+        models=["quantum_gnn_multimodal"],
+        predictions=predictions,
+    )
+
+    assert len(df) == 1
+    row = df.iloc[0]
+    assert row["Single-Scan Scans"] == 2
+    assert row["Multi-Scan Scans"] == 4
+    # Single-scan AUROC is 1.0, Multi-scan AUROC is 0.0
+    assert row["Single-Scan AUROC"] == 1.0
+    assert row["Multi-Scan AUROC"] == 0.0
+    assert row["Single-Scan AUROC"] != row["Multi-Scan AUROC"], "Subgroup AUROCs must be independently computed!"
+
+
+def test_subgroup_auroc_single_class_edge_case(tmp_path):
+    """Verify that when a disease class has zero positive labels in a subgroup,
+    it is assigned NaN, excluded from the macro mean, and counted in valid classes."""
+    test_df = pd.DataFrame([
+        {"patient_id": "P1", "age": 40, "sex": "M"},
+        {"patient_id": "P2", "age": 50, "sex": "F"},
+        {"patient_id": "P3", "age": 60, "sex": "M"},
+        {"patient_id": "P3", "age": 60, "sex": "M"},
+    ])
+
+    targets = np.zeros((4, 14), dtype=np.float32)
+    # Class 0: positive in single (idx 0), negative in single (idx 1)
+    targets[0, 0] = 1.0
+    # Class 1: all zeros in single (idx 0, 1), but positive in multi (idx 2)
+    targets[2, 1] = 1.0
+
+    probs = np.full((4, 14), 0.5, dtype=np.float32)
+    probs[0, 0] = 0.8
+    probs[1, 0] = 0.2
+    probs[2, 1] = 0.8
+    probs[3, 1] = 0.2
+
+    # Save to test_predictions.npz
+    m_dir = tmp_path / "classical_multimodal"
+    m_dir.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(m_dir / "test_predictions.npz", probs=probs, targets=targets)
+
+    df = evaluate_scan_count_subgroups(
+        test_df,
+        results_dir=tmp_path,
+        models=["classical_multimodal"],
+    )
+
+    assert len(df) == 1
+    row = df.iloc[0]
+    # For single-scan: only class 0 has both classes (1 valid class)
+    assert row["Single-Scan Valid Classes"] == 1
+    assert row["Single-Scan AUROC"] == 1.0

@@ -106,7 +106,7 @@ class CXRInferenceService:
                 checkpoint_path = exp_ckpts[0]
 
             ckpt_info = ModelCheckpointLoader.load_weights(
-                checkpoint_path, model, device=self.device, strict=False
+                checkpoint_path, model, device=self.device, strict=True
             )
             ckpt_info["path"] = str(checkpoint_path)
 

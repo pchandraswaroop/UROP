@@ -225,8 +225,9 @@ def build_model(
     # ------------------------------------------------------------------
     elif exp == "quantum_cnn":
         img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
+        allow_fb = bool(cfg.get("allow_classical_fallback", False))
         q    = get_quantum_layer(input_dim=img.feature_dim, output_dim=q_out,
-                                 enabled=quantum_enabled)
+                                 enabled=quantum_enabled, allow_classical_fallback=allow_fb)
         clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
         fuse = DiseaseSpecificFusion(image_dim=q_out, clinical_dim=clin_out,
                                      fused_dim=fused_ds, num_classes=num_classes,
@@ -298,8 +299,9 @@ def build_model(
     # ------------------------------------------------------------------
     elif exp in ("quantum_gnn_multimodal", "disease_specific_fusion"):
         img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
+        allow_fb = bool(cfg.get("allow_classical_fallback", False))
         q    = get_quantum_layer(input_dim=img.feature_dim, output_dim=q_out,
-                                 enabled=quantum_enabled)
+                                 enabled=quantum_enabled, allow_classical_fallback=allow_fb)
         # Clinical MLP processes patient demographic metadata
         clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
 
@@ -359,8 +361,9 @@ def build_model(
     # ------------------------------------------------------------------
     elif exp == "shared_fusion":
         img  = ImageBranch(backbone="efficientnet_b0", pretrained=pretrained)
+        allow_fb = bool(cfg.get("allow_classical_fallback", False))
         q    = get_quantum_layer(input_dim=img.feature_dim, output_dim=q_out,
-                                 enabled=quantum_enabled)
+                                 enabled=quantum_enabled, allow_classical_fallback=allow_fb)
         clin = MetadataEmbedder(input_dim=2, output_dim=clin_out, dropout=dropout)
         fuse = SimpleConcatFusion(image_dim=q_out, clinical_dim=clin_out,
                                   fused_dim=fused_simple, dropout=dropout)
