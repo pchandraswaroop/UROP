@@ -58,12 +58,14 @@ class ExplanationService:
 
         try:
             explainer = get_image_explainer(model)
+            gx = result.graph_x if (result.graph_x is not None and result.image_tensor is not None and result.graph_x.shape[0] == result.image_tensor.shape[0]) else None
+            ge = result.graph_edge_index if gx is not None else None
             hmap = explainer.generate(
                 result.image_tensor,
                 result.meta_tensor,
                 target_class=disease_idx,
-                graph_x=result.graph_x,
-                graph_edge_index=result.graph_edge_index,
+                graph_x=gx,
+                graph_edge_index=ge,
             )[0]  # [H, W]
 
             if result.raw_rgb is not None:
@@ -173,6 +175,9 @@ class ExplanationService:
                 "disease": target_disease,
                 "figure": fig,
                 "edge_importance": exp.get("edge_importance", []),
+                "node_importance": exp.get("node_importance", []),
+                "edge_importances": exp.get("edge_importance", []),
+                "node_importances": exp.get("node_importance", []),
             }
         except Exception as e:
             logger.exception("Graph explanation failed: %s", e)
@@ -181,6 +186,7 @@ class ExplanationService:
     @staticmethod
     def get_modality_attribution(
         result: PredictionResult,
+        target_disease: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Compute exact 3-player Shapley attribution across Image, Clinical Meta, and Graph."""
         if result.model_instance is None or result.image_tensor is None or result.meta_tensor is None:
@@ -212,12 +218,23 @@ class ExplanationService:
                 "Graph (%)": np.round(pct_G, 2),
             })
 
+            disease_idx = None
+            if target_disease is not None and target_disease in DISEASE_LABEL_NAMES:
+                disease_idx = DISEASE_LABEL_NAMES.index(target_disease)
+
+            image_pct = float(pct_I[disease_idx]) if disease_idx is not None else float(np.mean(pct_I))
+            clinical_pct = float(pct_M[disease_idx]) if disease_idx is not None else float(np.mean(pct_M))
+            gnn_pct = float(pct_G[disease_idx]) if disease_idx is not None else float(np.mean(pct_G))
+
             return {
                 "status": "success",
                 "summary_table": df,
                 "pct_image": pct_I,
                 "pct_meta": pct_M,
                 "pct_graph": pct_G,
+                "image_pct": image_pct,
+                "clinical_pct": clinical_pct,
+                "gnn_pct": gnn_pct,
                 "disclaimer": "Modality attribution reflects mathematical representation sensitivity, not clinical causality.",
             }
         except Exception as e:

@@ -37,6 +37,8 @@ class ScanGraphExplainer:
         model: nn.Module,
         epochs: int = 50,
         lr: float = 0.05,
+        num_classes: int = 14,
+        **kwargs,
     ) -> None:
         """
         Args:
@@ -48,6 +50,7 @@ class ScanGraphExplainer:
         self.model.eval()
         self.epochs = epochs
         self.lr = lr
+        self.num_classes = num_classes
 
     def _forward_model(
         self,

@@ -184,7 +184,9 @@ class MultiModalCXRModel(nn.Module):
             if graph_edge_index is None:
                 graph_edge_index = torch.arange(B, device=images.device, dtype=torch.long).repeat(2, 1)
 
-            gnn_feats = self.gnn_branch(node_feats, graph_edge_index)  # [B, gnn_out]
+            gnn_feats = self.gnn_branch(node_feats, graph_edge_index)  # [B_nodes, gnn_out]
+            if gnn_feats.shape[0] != B:
+                gnn_feats = gnn_feats[:B]
 
             # 3. Multimodal Fusion (Image + Clinical MLP + Scan Graph GNN)
             fused = self.fusion(img_feats, clin_feats, gnn_features=gnn_feats)
