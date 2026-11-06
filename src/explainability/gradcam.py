@@ -105,26 +105,34 @@ class GradCAMPlusPlus:
         if meta is None:
             meta = torch.zeros(B, 2, device=images.device)
 
-        # Forward pass (ensure gradients can flow back to activations)
-        images = images.clone().detach().requires_grad_(True)
-        try:
-            logits = self.model(
-                images,
-                meta,
-                graph_x=graph_x,
-                graph_edge_index=graph_edge_index,
-                return_logits=True,
-            )
-        except TypeError:
-            try:
-                logits = self.model(images, meta, return_logits=True)
-            except TypeError:
-                logits = self.model(images)
+        # Graph node alignment for visual saliency:
+        # If graph_x has mismatched batch dimension (e.g., companion scan nodes while images is single primary scan),
+        # isolate the primary scan representation to avoid dimension mismatch in fusion.
+        if graph_x is not None and graph_x.shape[0] != B:
+            graph_x = None
+            graph_edge_index = None
 
-        # Score for target class
-        score = logits[:, target_class].sum()
-        self.model.zero_grad()
-        score.backward(retain_graph=True)
+        with torch.enable_grad():
+            # Forward pass (ensure gradients can flow back to activations)
+            images = images.clone().detach().requires_grad_(True)
+            try:
+                logits = self.model(
+                    images,
+                    meta,
+                    graph_x=graph_x,
+                    graph_edge_index=graph_edge_index,
+                    return_logits=True,
+                )
+            except TypeError:
+                try:
+                    logits = self.model(images, meta, return_logits=True)
+                except TypeError:
+                    logits = self.model(images)
+
+            # Score for target class
+            score = logits[:, target_class].sum()
+            self.model.zero_grad()
+            score.backward(retain_graph=False)
 
         if self.activations is None or self.gradients is None:
             raise RuntimeError("Hooks failed to capture activations or gradients.")
@@ -238,7 +246,7 @@ class ViTAttribution:
 
         score = logits[:, target_class].sum()
         self.model.zero_grad()
-        score.backward(retain_graph=True)
+        score.backward(retain_graph=False)
 
         if self.tokens is None or self.gradients is None:
             raise RuntimeError("ViT hooks failed to capture tokens or gradients.")

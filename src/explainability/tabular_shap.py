@@ -72,7 +72,7 @@ class TabularFeatureExplainer:
         """Evaluate model logits for a given subset of active features."""
         B = meta.shape[0]
         device = meta.device
-        baseline_exp = self.baseline.to(device).expand(B, 2).clone()
+        baseline_exp = self.baseline.to(device=device, dtype=meta.dtype).expand(B, 2).clone()
 
         # Build feature vector where non-coalition features take baseline values
         meta_coalition = baseline_exp.clone()
