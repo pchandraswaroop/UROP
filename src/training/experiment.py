@@ -242,12 +242,13 @@ class Experiment:
             self.name, self.training_time_seconds, self.best_epoch + 1
         )
 
-        # Extract final val metrics from last history entry
+        # Extract best val metrics from the history entry of best_epoch
         if self.train_history:
-            last = self.train_history[-1]
+            best_idx = self.best_epoch if (0 <= self.best_epoch < len(self.train_history)) else -1
+            best_entry = self.train_history[best_idx]
             self.val_metrics = {
                 k.replace("val_", ""): v
-                for k, v in last.items()
+                for k, v in best_entry.items()
                 if k.startswith("val_")
             }
         self.val_metrics["best_epoch"] = self.best_epoch

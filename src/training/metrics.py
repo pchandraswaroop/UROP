@@ -32,10 +32,66 @@ logger = logging.getLogger(__name__)
 
 # ── Metric Computation ────────────────────────────────────────────────────────
 
+def find_optimal_thresholds(
+    val_probs: np.ndarray,
+    val_targets: np.ndarray,
+    label_names: Optional[List[str]] = None,
+    min_positives: int = 1,
+    fallback: float = 0.5,
+    candidates: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """Find per-class F1-optimal decision thresholds using validation data only.
+
+    CRITICAL CLINICAL & METHODOLOGICAL INVARIANT:
+      Threshold optimization MUST be performed strictly on validation predictions
+      and validation labels. Held-out test labels are never accessed or observed.
+
+    Args:
+        val_probs:     [N, C] predicted probabilities on the validation set.
+        val_targets:   [N, C] binary ground-truth labels on the validation set.
+        label_names:   Optional list of class names.
+        min_positives: Minimum positive examples required in validation set to tune.
+        fallback:      Default threshold when class support is insufficient (default 0.50).
+        candidates:    Array of threshold search values (default: 0.05 to 0.90 in steps of 0.01).
+
+    Returns:
+        [C] array of per-class optimal thresholds in [0, 1].
+    """
+    if candidates is None:
+        candidates = np.arange(0.05, 0.91, 0.01)
+
+    num_classes = val_probs.shape[1]
+    best_thresholds = np.full(num_classes, fallback, dtype=np.float32)
+
+    for c in range(num_classes):
+        targets_c = val_targets[:, c]
+        probs_c = val_probs[:, c]
+
+        if targets_c.sum() < min_positives:
+            best_thresholds[c] = fallback
+            continue
+
+        best_f1 = -1.0
+        best_t = fallback
+
+        for t in candidates:
+            preds_c = (probs_c >= t).astype(np.float32)
+            f1 = f1_score(targets_c, preds_c, zero_division=0)
+            if f1 > best_f1:
+                best_f1 = f1
+                best_t = t
+            elif f1 == best_f1 and abs(t - 0.50) < abs(best_t - 0.50):
+                best_t = t
+
+        best_thresholds[c] = float(best_t) if best_f1 > 0.0 else fallback
+
+    return best_thresholds
+
+
 def compute_metrics(
     all_probs: np.ndarray,    # [N, 14] predicted probabilities
     all_targets: np.ndarray,  # [N, 14] binary ground truth
-    threshold: float = 0.5,
+    threshold: float | np.ndarray = 0.5,
     label_names: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     """Compute full suite of metrics.
@@ -43,7 +99,7 @@ def compute_metrics(
     Args:
         all_probs:   [N, 14] float probabilities in [0, 1].
         all_targets: [N, 14] binary float labels.
-        threshold:   Classification threshold for binary predictions.
+        threshold:   Classification threshold for binary predictions (scalar or [14] array).
         label_names: List of class names for per-class reporting.
 
     Returns:
@@ -53,7 +109,12 @@ def compute_metrics(
         label_names = DISEASE_LABEL_NAMES
 
     num_classes = all_probs.shape[1]
-    all_preds = (all_probs >= threshold).astype(np.float32)
+    if isinstance(threshold, (int, float)):
+        all_preds = (all_probs >= threshold).astype(np.float32)
+        thresh_arr = np.full(num_classes, float(threshold), dtype=np.float32)
+    else:
+        thresh_arr = np.asarray(threshold, dtype=np.float32)
+        all_preds = (all_probs >= thresh_arr[None, :]).astype(np.float32)
 
     metrics: Dict[str, float] = {}
 
@@ -85,6 +146,7 @@ def compute_metrics(
         metrics[f"{name}/f1"]        = f1
         metrics[f"{name}/precision"] = prec
         metrics[f"{name}/recall"]    = rec
+        metrics[f"{name}/threshold"] = float(thresh_arr[c])
 
         if not np.isnan(auc):
             auc_list.append(auc)
@@ -102,7 +164,8 @@ def compute_metrics(
     metrics["precision_micro"] = float(precision_score(all_targets, all_preds, average="micro", zero_division=0))
     metrics["recall_micro"]    = float(recall_score(all_targets, all_preds, average="micro", zero_division=0))
     metrics["n_valid_auc"]     = len(auc_list)
-    metrics["threshold"]       = threshold
+    metrics["threshold"]       = float(np.mean(thresh_arr))
+    metrics["thresholds"]      = thresh_arr.tolist()
 
     return metrics
 
