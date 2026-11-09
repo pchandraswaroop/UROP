@@ -42,6 +42,7 @@ logger = logging.getLogger(__name__)
 class ExecutionMode(str, Enum):
     SMOKE = "smoke"
     MEDIUM = "medium"
+    HIGH = "high"
     FULL = "full"
     FULL_50 = "full_50"
 
@@ -121,6 +122,23 @@ def get_mode_config(
             max_scans_per_patient=5 if max_scans_per_patient is None else max_scans_per_patient,
             is_preliminary=True,
         )
+    elif mode_str in ("high", "20k"):
+        train_target = 20000 if target_train_scans is None else target_train_scans
+        val_target = 800 if target_val_scans is None else target_val_scans
+        cfg = ModeConfig(
+            mode="high",
+            description=f"HIGH EXPERIMENTATION: Scaled cohort training ({train_target:,} train / {val_target:,} val / 800 test scans, max 5 scans/patient, 10 epochs) on GPU.",
+            target_train_scans=train_target,
+            target_val_scans=val_target,
+            target_test_scans=800,
+            max_epochs=10 if max_epochs is None else max_epochs,
+            early_stopping_patience=3,
+            checkpoint_dir="checkpoints/high",
+            results_dir="results/high",
+            outputs_dir="outputs/high/model_comparison",
+            max_scans_per_patient=5 if max_scans_per_patient is None else max_scans_per_patient,
+            is_preliminary=False,
+        )
     elif mode_str in ("full", "final", "research", "gpu"):
         cfg = ModeConfig(
             mode="full",
@@ -153,7 +171,7 @@ def get_mode_config(
         )
     else:
         raise ValueError(
-            f"Unknown execution mode '{mode}'. Choose from: 'smoke', 'medium', 'full', 'full_50'."
+            f"Unknown execution mode '{mode}'. Choose from: 'smoke', 'medium', 'high', 'full', 'full_50'."
         )
 
     return cfg
