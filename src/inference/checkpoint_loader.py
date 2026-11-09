@@ -75,6 +75,15 @@ class ModelCheckpointLoader:
             exp_name = path.parent.name if path.parent != ckpt_dir else "general"
             available.setdefault(exp_name, []).append(path)
 
+        # Sort each experiment's checkpoints: prioritize 'medium' mode and highest validation score
+        for exp_name in available:
+            def sort_key(p: Path):
+                is_med = 1 if "medium" in str(p).lower() else 0
+                is_valid, score, _ = ModelCheckpointLoader.extract_checkpoint_auroc(p)
+                score_val = score if is_valid and score is not None else -1.0
+                return (is_med, score_val, p.stat().st_mtime if p.exists() else 0)
+            available[exp_name].sort(key=sort_key, reverse=True)
+
         return available
 
     @classmethod
@@ -122,22 +131,38 @@ class ModelCheckpointLoader:
         Returns None if no verified checkpoint exists.
         """
         ckpt_root = Path(checkpoint_dir)
-        exp_dir = ckpt_root / experiment
-        search_dirs = [exp_dir] if exp_dir.exists() else [ckpt_root]
+        if not ckpt_root.exists():
+            return None
+
+        # Search prioritized mode directories first (medium > direct > smoke > full)
+        search_dirs = [
+            ckpt_root / "medium" / experiment,
+            ckpt_root / experiment,
+            ckpt_root / "smoke" / experiment,
+            ckpt_root / "full" / experiment,
+            ckpt_root / "full_50" / experiment,
+        ]
+
+        searched_files: List[Path] = []
+        for d in search_dirs:
+            if d.exists() and d.is_dir():
+                found = list(d.glob("*.pt")) + list(d.glob("*.pth"))
+                if found:
+                    searched_files.extend(found)
+
+        # Fallback: recursive scan under checkpoint_dir matching the experiment
+        if not searched_files:
+            for path in list(ckpt_root.rglob("*.pt")) + list(ckpt_root.rglob("*.pth")):
+                if experiment == path.parent.name or experiment in path.name:
+                    searched_files.append(path)
 
         candidates: List[Tuple[float, int, Path]] = []
-        for d in search_dirs:
-            if not d.exists():
-                continue
-            for path in list(d.glob("*.pt")) + list(d.glob("*.pth")):
-                # Check path matches experiment
-                if d == ckpt_root and experiment not in path.name and experiment not in path.parent.name:
-                    continue
-                is_valid, score, _ = cls.extract_checkpoint_auroc(path)
-                if is_valid and score is not None:
-                    ep_match = re.search(r"epoch(\d+)", path.name)
-                    epoch = int(ep_match.group(1)) if ep_match else 0
-                    candidates.append((score, epoch, path))
+        for path in searched_files:
+            is_valid, score, _ = cls.extract_checkpoint_auroc(path)
+            if is_valid and score is not None:
+                ep_match = re.search(r"epoch(\d+)", path.name)
+                epoch = int(ep_match.group(1)) if ep_match else 0
+                candidates.append((score, epoch, path))
 
         if not candidates:
             return None
