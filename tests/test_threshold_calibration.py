@@ -90,3 +90,48 @@ def test_experiment_best_epoch_metric_indexing():
     assert exp.val_metrics["auc_mean"] == 0.6458
     assert exp.val_metrics["auc_mean"] != 0.6304
     assert exp.val_metrics["best_epoch"] == 1
+
+
+def test_clinical_metrics_accuracy_sensitivity_specificity():
+    """Verify exact mathematical calculation of accuracy, sensitivity, specificity, and balanced accuracy."""
+    # Class 0: targets = [1, 1, 0, 0], preds = [1, 1, 1, 0] -> TP=2, TN=1, FP=1, FN=0
+    # Class 1: targets = [0, 1, 0, 0], preds = [0, 0, 0, 0] -> TP=0, TN=3, FP=0, FN=1
+    targets = np.array([
+        [1.0, 0.0],
+        [1.0, 1.0],
+        [0.0, 0.0],
+        [0.0, 0.0],
+    ], dtype=np.float32)
+
+    probs = np.array([
+        [0.9, 0.1],
+        [0.8, 0.2],
+        [0.7, 0.3],
+        [0.2, 0.4],
+    ], dtype=np.float32)
+
+    label_names = ["DiseaseA", "DiseaseB"]
+    metrics = compute_metrics(probs, targets, threshold=0.50, label_names=label_names)
+
+    # Class 0 assertions
+    assert np.isclose(metrics["DiseaseA/accuracy"], 0.75)
+    assert np.isclose(metrics["DiseaseA/sensitivity"], 1.0)
+    assert np.isclose(metrics["DiseaseA/recall"], 1.0)
+    assert np.isclose(metrics["DiseaseA/specificity"], 0.5)
+    assert np.isclose(metrics["DiseaseA/balanced_accuracy"], 0.75)
+
+    # Class 1 assertions
+    assert np.isclose(metrics["DiseaseB/accuracy"], 0.75)
+    assert np.isclose(metrics["DiseaseB/sensitivity"], 0.0)
+    assert np.isclose(metrics["DiseaseB/recall"], 0.0)
+    assert np.isclose(metrics["DiseaseB/specificity"], 1.0)
+    assert np.isclose(metrics["DiseaseB/balanced_accuracy"], 0.50)
+
+    # Macro & global assertions
+    assert np.isclose(metrics["accuracy_macro"], 0.75)
+    assert np.isclose(metrics["sensitivity_macro"], 0.50)
+    assert np.isclose(metrics["recall_macro"], 0.50)
+    assert np.isclose(metrics["specificity_macro"], 0.75)
+    assert np.isclose(metrics["balanced_accuracy_macro"], 0.625)
+    assert np.isclose(metrics["hamming_accuracy"], 0.75)
+    assert np.isclose(metrics["subset_accuracy"], 0.50)

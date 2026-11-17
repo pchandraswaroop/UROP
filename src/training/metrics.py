@@ -120,6 +120,7 @@ def compute_metrics(
 
     # Per-class metrics
     auc_list, ap_list, f1_list = [], [], []
+    prec_list, rec_list, spec_list, acc_list, bal_acc_list = [], [], [], [], []
 
     for c in range(num_classes):
         name = label_names[c] if c < len(label_names) else f"class_{c}"
@@ -136,36 +137,72 @@ def compute_metrics(
             ap  = float("nan")
             logger.debug("Class '%s': no positive examples, AUC set to NaN.", name)
 
-        # F1 / Precision / Recall
+        # F1 / Precision / Recall (Sensitivity)
         f1   = f1_score(targets_c, preds_c, zero_division=0)
         prec = precision_score(targets_c, preds_c, zero_division=0)
         rec  = recall_score(targets_c, preds_c, zero_division=0)
 
-        metrics[f"{name}/auc"]       = auc
-        metrics[f"{name}/ap"]        = ap
-        metrics[f"{name}/f1"]        = f1
-        metrics[f"{name}/precision"] = prec
-        metrics[f"{name}/recall"]    = rec
-        metrics[f"{name}/threshold"] = float(thresh_arr[c])
+        # Confusion components for class c
+        tp = float(np.sum((targets_c == 1) & (preds_c == 1)))
+        tn = float(np.sum((targets_c == 0) & (preds_c == 0)))
+        fp = float(np.sum((targets_c == 0) & (preds_c == 1)))
+        fn = float(np.sum((targets_c == 1) & (preds_c == 0)))
+        total_c = len(targets_c)
+
+        acc  = (tp + tn) / total_c if total_c > 0 else float("nan")
+        spec = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+        sens = rec  # Clinical standard: Sensitivity is True Positive Rate (Recall)
+        bal_acc = (sens + spec) / 2.0
+
+        metrics[f"{name}/auc"]               = auc
+        metrics[f"{name}/ap"]                = ap
+        metrics[f"{name}/f1"]                = f1
+        metrics[f"{name}/precision"]         = prec
+        metrics[f"{name}/recall"]            = rec
+        metrics[f"{name}/sensitivity"]       = sens
+        metrics[f"{name}/specificity"]       = spec
+        metrics[f"{name}/accuracy"]          = acc
+        metrics[f"{name}/balanced_accuracy"] = bal_acc
+        metrics[f"{name}/threshold"]         = float(thresh_arr[c])
 
         if not np.isnan(auc):
             auc_list.append(auc)
         if not np.isnan(ap):
             ap_list.append(ap)
         f1_list.append(f1)
+        prec_list.append(prec)
+        rec_list.append(rec)
+        spec_list.append(spec)
+        acc_list.append(acc)
+        bal_acc_list.append(bal_acc)
 
     # Aggregate metrics (skip NaN classes)
-    metrics["auc_mean"]        = float(np.mean(auc_list)) if auc_list else float("nan")
-    metrics["ap_mean"]         = float(np.mean(ap_list))  if ap_list  else float("nan")
-    metrics["f1_macro"]        = float(np.mean(f1_list))  if f1_list  else float("nan")
-    metrics["f1_micro"]        = float(f1_score(all_targets, all_preds, average="micro", zero_division=0))
-    metrics["precision_macro"] = float(precision_score(all_targets, all_preds, average="macro", zero_division=0))
-    metrics["recall_macro"]    = float(recall_score(all_targets, all_preds, average="macro", zero_division=0))
-    metrics["precision_micro"] = float(precision_score(all_targets, all_preds, average="micro", zero_division=0))
-    metrics["recall_micro"]    = float(recall_score(all_targets, all_preds, average="micro", zero_division=0))
-    metrics["n_valid_auc"]     = len(auc_list)
-    metrics["threshold"]       = float(np.mean(thresh_arr))
-    metrics["thresholds"]      = thresh_arr.tolist()
+    metrics["auc_mean"]                 = float(np.mean(auc_list)) if auc_list else float("nan")
+    metrics["ap_mean"]                  = float(np.mean(ap_list))  if ap_list  else float("nan")
+    metrics["f1_macro"]                 = float(np.mean(f1_list))  if f1_list  else float("nan")
+    metrics["f1_micro"]                 = float(f1_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["precision_macro"]          = float(np.mean(prec_list)) if prec_list else float("nan")
+    metrics["recall_macro"]             = float(np.mean(rec_list))  if rec_list  else float("nan")
+    metrics["sensitivity_macro"]        = metrics["recall_macro"]
+    metrics["specificity_macro"]        = float(np.mean(spec_list)) if spec_list else float("nan")
+    metrics["accuracy_macro"]           = float(np.mean(acc_list))  if acc_list  else float("nan")
+    metrics["balanced_accuracy_macro"]  = float(np.mean(bal_acc_list)) if bal_acc_list else float("nan")
+
+    # Global multi-label accuracy metrics:
+    metrics["subset_accuracy"]          = float(np.mean(np.all(all_targets == all_preds, axis=1))) if len(all_targets) > 0 else float("nan")
+    metrics["hamming_accuracy"]         = float(np.mean(all_targets == all_preds)) if len(all_targets) > 0 else float("nan")
+
+    # Micro aggregates
+    metrics["precision_micro"]          = float(precision_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["recall_micro"]             = float(recall_score(all_targets, all_preds, average="micro", zero_division=0))
+    metrics["sensitivity_micro"]        = metrics["recall_micro"]
+    total_tn = float(np.sum((all_targets == 0) & (all_preds == 0)))
+    total_fp = float(np.sum((all_targets == 0) & (all_preds == 1)))
+    metrics["specificity_micro"]        = total_tn / (total_tn + total_fp) if (total_tn + total_fp) > 0 else 0.0
+
+    metrics["n_valid_auc"]              = len(auc_list)
+    metrics["threshold"]                = float(np.mean(thresh_arr))
+    metrics["thresholds"]               = thresh_arr.tolist()
 
     return metrics
 
@@ -175,27 +212,34 @@ def format_metrics_table(metrics: Dict[str, float], label_names=None) -> str:
     if label_names is None:
         label_names = DISEASE_LABEL_NAMES
 
-    lines = ["=" * 72]
-    lines.append(f"{'Disease':<25} {'AUC':>8} {'AP':>8} {'F1':>8} {'Prec':>8} {'Rec':>8}")
-    lines.append("-" * 72)
+    lines = ["=" * 88]
+    lines.append(f"{'Disease':<22} {'AUC':>7} {'F1':>7} {'Prec':>7} {'Sens/Rec':>9} {'Spec':>7} {'Acc':>7} {'BalAcc':>7}")
+    lines.append("-" * 88)
 
     for name in label_names:
         auc  = metrics.get(f"{name}/auc", float("nan"))
-        ap   = metrics.get(f"{name}/ap", float("nan"))
         f1   = metrics.get(f"{name}/f1", float("nan"))
         prec = metrics.get(f"{name}/precision", float("nan"))
         rec  = metrics.get(f"{name}/recall", float("nan"))
+        spec = metrics.get(f"{name}/specificity", float("nan"))
+        acc  = metrics.get(f"{name}/accuracy", float("nan"))
+        bal  = metrics.get(f"{name}/balanced_accuracy", float("nan"))
         lines.append(
-            f"{name:<25} {auc:>8.4f} {ap:>8.4f} {f1:>8.4f} {prec:>8.4f} {rec:>8.4f}"
+            f"{name:<22} {auc:>7.4f} {f1:>7.4f} {prec:>7.4f} {rec:>9.4f} {spec:>7.4f} {acc:>7.4f} {bal:>7.4f}"
         )
 
-    lines.append("=" * 72)
+    lines.append("=" * 88)
     lines.append(
-        f"{'MACRO AVG':<25} {metrics.get('auc_mean', float('nan')):>8.4f} "
-        f"{metrics.get('ap_mean', float('nan')):>8.4f} "
-        f"{metrics.get('f1_macro', float('nan')):>8.4f}"
+        f"{'MACRO AVERAGE':<22} "
+        f"{metrics.get('auc_mean', float('nan')):>7.4f} "
+        f"{metrics.get('f1_macro', float('nan')):>7.4f} "
+        f"{metrics.get('precision_macro', float('nan')):>7.4f} "
+        f"{metrics.get('recall_macro', float('nan')):>9.4f} "
+        f"{metrics.get('specificity_macro', float('nan')):>7.4f} "
+        f"{metrics.get('accuracy_macro', float('nan')):>7.4f} "
+        f"{metrics.get('balanced_accuracy_macro', float('nan')):>7.4f}"
     )
-    lines.append("=" * 72)
+    lines.append("=" * 88)
     return "\n".join(lines)
 
 

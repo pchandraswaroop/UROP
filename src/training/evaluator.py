@@ -81,6 +81,13 @@ def load_experiment_metrics(
         micro_f1 = test_m.get("f1_micro", float("nan"))
         train_time_sec = val_m.get("training_time_seconds", float("nan"))
 
+        # Paper comparison metrics (accuracy, precision, sensitivity, specificity, balanced accuracy)
+        prec_macro = test_m.get("precision_macro", float("nan"))
+        rec_macro  = test_m.get("recall_macro", float("nan"))
+        spec_macro = test_m.get("specificity_macro", float("nan"))
+        acc_macro  = test_m.get("accuracy_macro", test_m.get("hamming_accuracy", float("nan")))
+        bal_acc    = test_m.get("balanced_accuracy_macro", float("nan"))
+
         if not np.isnan(train_time_sec):
             m, s = divmod(int(train_time_sec), 60)
             time_str = f"{m}m {s:02d}s" if m > 0 else f"{s}s"
@@ -94,6 +101,11 @@ def load_experiment_metrics(
             "Test AUROC": round(float(test_auc), 4) if not np.isnan(test_auc) else float("nan"),
             "Macro F1": round(float(macro_f1), 4) if not np.isnan(macro_f1) else float("nan"),
             "Micro F1": round(float(micro_f1), 4) if not np.isnan(micro_f1) else float("nan"),
+            "Accuracy": round(float(acc_macro), 4) if not np.isnan(acc_macro) else float("nan"),
+            "Precision": round(float(prec_macro), 4) if not np.isnan(prec_macro) else float("nan"),
+            "Sensitivity": round(float(rec_macro), 4) if not np.isnan(rec_macro) else float("nan"),
+            "Specificity": round(float(spec_macro), 4) if not np.isnan(spec_macro) else float("nan"),
+            "Balanced Acc": round(float(bal_acc), 4) if not np.isnan(bal_acc) else float("nan"),
             "Training Time": time_str,
         })
 
@@ -267,6 +279,24 @@ def generate_comparison_plots(
     plt.savefig(p6, dpi=200, bbox_inches="tight")
     plt.close()
     saved_plots["precision_recall_comparison"] = p6
+
+    # 7. Clinical Sensitivity and Specificity Comparison
+    fig, ax = plt.subplots(figsize=(6.5, 4))
+    senss = [test_metrics.get(m, {}).get("sensitivity_macro", test_metrics.get(m, {}).get("recall_macro", 0.0)) for m in models]
+    specs = [test_metrics.get(m, {}).get("specificity_macro", 0.0) for m in models]
+    ax.bar(x_pos - w / 2, senss, width=w, label="Sensitivity (Recall)", color="#2ca02c")
+    ax.bar(x_pos + w / 2, specs, width=w, label="Specificity (TNR)", color="#1f77b4")
+    ax.set_xticks(x_pos)
+    ax.set_xticklabels(models, rotation=15, ha="right", fontsize=10)
+    ax.set_ylabel("Metric Value")
+    ax.set_title("Clinical Sensitivity vs Specificity", fontsize=12, fontweight="bold")
+    ax.legend(loc="lower right")
+    ax.grid(axis="y", linestyle=":", alpha=0.6)
+    plt.tight_layout()
+    p7 = out_dir / "sensitivity_specificity_comparison.png"
+    plt.savefig(p7, dpi=200, bbox_inches="tight")
+    plt.close()
+    saved_plots["sensitivity_specificity_comparison"] = p7
 
     return saved_plots
 
