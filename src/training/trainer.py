@@ -16,8 +16,11 @@ from __future__ import annotations
 
 import copy
 import csv
+import gc
 import logging
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -26,10 +29,22 @@ import torch.nn as nn
 from torch.optim import AdamW
 from torch.optim.lr_scheduler import CosineAnnealingLR
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 from src.training.metrics import MetricAccumulator, format_metrics_table
 
 logger = logging.getLogger(__name__)
+
+# Colab/Jupyter live logging: ensure INFO messages appear immediately
+if not logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setLevel(logging.INFO)
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 
 # ── Early Stopping ────────────────────────────────────────────────────────────
@@ -312,7 +327,8 @@ class Trainer:
         if hasattr(loader, "batch_sampler") and hasattr(loader.batch_sampler, "set_epoch"):
             loader.batch_sampler.set_epoch(epoch)
 
-        for batch in loader:
+        pbar = tqdm(loader, desc=f"Epoch {epoch+1} [train]", leave=False, unit="batch")
+        for batch in pbar:
             images = batch["image"].to(self.device)
             labels = batch["label"].to(self.device)
             meta   = batch["meta"].to(self.device)
@@ -348,6 +364,7 @@ class Trainer:
             total_loss_sum += loss.item() * b_size
             total_samples  += b_size
             n_batches      += 1
+            pbar.set_postfix(loss=f"{loss.item():.4f}")
 
         if self.scheduler is not None:
             self.scheduler.step()
@@ -379,7 +396,8 @@ class Trainer:
         total_samples  = 0
         n_batches      = 0
 
-        for batch in loader:
+        pbar = tqdm(loader, desc=f"[{split}]", leave=False, unit="batch")
+        for batch in pbar:
             images = batch["image"].to(self.device)
             labels = batch["label"].to(self.device)
             meta   = batch["meta"].to(self.device)
@@ -436,22 +454,37 @@ class Trainer:
         history: List[Dict[str, float]] = []
 
         for epoch in range(start_epoch, max_epochs):
+            # Free unreferenced tensors at the start of every epoch
+            gc.collect()
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+            t0 = time.time()
             train_metrics = self.train_epoch(train_loader, epoch)
+            train_secs = time.time() - t0
+
+            t1 = time.time()
             val_metrics   = self.eval_epoch(val_loader, "val")
+            val_secs = time.time() - t1
 
             # Merge for history
             combined = {f"train_{k}": v for k, v in train_metrics.items()}
             combined.update({f"val_{k}": v for k, v in val_metrics.items()})
             combined["epoch"] = epoch
+            combined["train_time_sec"] = train_secs
+            combined["val_time_sec"]   = val_secs
             history.append(combined)
 
             logger.info(
-                "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | val_auc=%.4f | val_f1=%.4f",
+                "Epoch %d/%d | train_loss=%.4f | val_loss=%.4f | val_auc=%.4f | val_f1=%.4f"
+                " | train_time=%.1fs (%.1fm) | val_time=%.1fs",
                 epoch + 1, max_epochs,
                 train_metrics.get("loss", float("nan")),
                 val_metrics.get("loss",   float("nan")),
                 val_metrics.get("auc_mean", float("nan")),
                 val_metrics.get("f1_macro", float("nan")),
+                train_secs, train_secs / 60,
+                val_secs,
             )
 
             # CSV logging

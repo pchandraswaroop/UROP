@@ -15,8 +15,10 @@ Usage
 
 from __future__ import annotations
 
+import gc
 import json
 import logging
+import sys
 import time
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -33,6 +35,17 @@ from src.training.losses import WeightedBCELoss, compute_pos_weights
 from src.training.trainer import CheckpointManager, EarlyStopping, Trainer
 
 logger = logging.getLogger(__name__)
+
+# Colab/Jupyter live logging: ensure INFO messages appear immediately
+if not logger.handlers:
+    _h = logging.StreamHandler(sys.stdout)
+    _h.setLevel(logging.INFO)
+    _h.setFormatter(logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+        datefmt="%H:%M:%S",
+    ))
+    logger.addHandler(_h)
+    logger.setLevel(logging.INFO)
 
 
 class Experiment:
@@ -109,7 +122,11 @@ class Experiment:
 
         # ── DataLoaders ──────────────────────────────────────────────
         batch_size  = self.cfg.get("batch_size", 4)
+        # Default to 0 in notebook/Colab environments to prevent RAM exhaustion
+        _in_notebook = any(k in sys.modules for k in ("IPython", "ipykernel", "google.colab"))
         num_workers = self.cfg.get("num_workers", 0)
+        if _in_notebook:
+            num_workers = 0  # Force 0 in Colab/Jupyter to avoid OOM from dataset duplication
         image_size  = self.cfg.get("image_size", 224)
         pin_memory  = self.device == "cuda"
 
