@@ -26,21 +26,21 @@ import torch
 # ── NIH Canonical label order ────────────────────────────────────────────────
 
 NIH_LABEL_NAMES: List[str] = [
-    "No Finding",       # 0  — not a target
-    "Atelectasis",      # 1
-    "Cardiomegaly",     # 2
-    "Consolidation",    # 3
-    "Effusion",         # 4
-    "Emphysema",        # 5
-    "Fibrosis",         # 6
-    "Hernia",           # 7
-    "Infiltration",     # 8
-    "Mass",             # 9
-    "Nodule",           # 10
-    "Pleural Thickening",  # 11
-    "Pneumonia",        # 12
-    "Pneumothorax",     # 13
-    "Edema",            # 14
+    "No Finding",          # 0  — not a target
+    "Atelectasis",         # 1
+    "Cardiomegaly",        # 2
+    "Effusion",            # 3
+    "Infiltration",        # 4
+    "Mass",                # 5
+    "Nodule",              # 6
+    "Pneumonia",           # 7
+    "Pneumothorax",        # 8
+    "Consolidation",       # 9
+    "Edema",               # 10
+    "Emphysema",           # 11
+    "Fibrosis",            # 12
+    "Pleural Thickening",  # 13
+    "Hernia",              # 14
 ]
 
 # The 14 disease classes we predict (NIH index → our 0-based index)
